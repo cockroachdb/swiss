@@ -66,36 +66,33 @@
 //
 // # Performance
 //
-// A swiss.Map has similar or slightly better performance than Go's builtin map
-// for small map sizes, and is much faster at large map sizes (old=go-map,
+// A swiss.Map has similar or slightly better performance than Go's builtin
+// map for small map sizes, and is much faster at large map sizes (old=go-map,
 // new=swissmap):
 //
-//	name                        old time/op  new time/op  delta
-//	StringMaps/n=16/map-10      7.19ns ± 3%  7.28ns ± 0%     ~     (p=0.154 n=9+9)
-//	StringMaps/n=128/map-10     7.66ns ± 5%  7.37ns ± 3%   -3.74%  (p=0.008 n=10+9)
-//	StringMaps/n=1024/map-10    10.8ns ± 3%   7.6ns ± 3%  -29.76%  (p=0.000 n=10+10)
-//	StringMaps/n=8192/map-10    20.3ns ± 2%   7.9ns ± 1%  -61.16%  (p=0.000 n=10+10)
-//	StringMaps/n=131072/map-10  26.1ns ± 0%  14.0ns ± 1%  -46.56%  (p=0.000 n=10+10)
-//	Int64Maps/n=16/map-10       4.96ns ± 1%  4.83ns ± 0%   -2.73%  (p=0.000 n=9+9)
-//	Int64Maps/n=128/map-10      5.19ns ± 3%  4.89ns ± 5%   -5.80%  (p=0.000 n=10+10)
-//	Int64Maps/n=1024/map-10     6.80ns ± 5%  5.01ns ± 2%  -26.32%  (p=0.000 n=10+10)
-//	Int64Maps/n=8192/map-10     17.4ns ± 1%   5.3ns ± 0%  -69.59%  (p=0.000 n=10+7)
-//	Int64Maps/n=131072/map-10   20.6ns ± 0%   6.7ns ± 0%  -67.67%  (p=0.000 n=10+9)
+//	name                                         old time/op  new time/op  delta
+//	StringMap/avgLoad,n=10/Map/Get-10            9.53ns ± 6%  8.43ns ± 1%  -11.50%  (p=0.000 n=10+9)
+//	StringMap/avgLoad,n=83/Map/Get-10            11.0ns ± 9%   9.2ns ±11%  -16.57%  (p=0.000 n=10+10)
+//	StringMap/avgLoad,n=671/Map/Get-10           15.7ns ± 3%   9.0ns ± 3%  -42.31%  (p=0.000 n=10+10)
+//	StringMap/avgLoad,n=5375/Map/Get-10          25.8ns ± 1%   9.3ns ± 1%  -63.88%  (p=0.000 n=10+10)
+//	StringMap/avgLoad,n=86015/Map/Get-10         30.5ns ± 1%  10.9ns ± 2%  -64.34%  (p=0.000 n=9+10)
+//	Int64Map/avgLoad,n=10/Map/Get-10             5.11ns ± 3%  4.85ns ± 1%   -5.13%  (p=0.000 n=10+10)
+//	Int64Map/avgLoad,n=83/Map/Get-10             5.23ns ± 3%  5.18ns ± 7%     ~     (p=0.529 n=10+10)
+//	Int64Map/avgLoad,n=671/Map/Get-10            6.03ns ± 7%  5.36ns ± 5%  -11.08%  (p=0.000 n=10+10)
+//	Int64Map/avgLoad,n=5375/Map/Get-10           18.3ns ± 2%   5.7ns ± 2%  -68.76%  (p=0.000 n=10+10)
+//	Int64Map/avgLoad,n=86015/Map/Get-10          23.9ns ± 1%   6.9ns ± 0%  -71.24%  (p=0.000 n=10+9)
 //
-// A swiss.Map dominates the performance of the RobinHood map used by Pebble's
-// block-cache (old=robinhood, new=swissmap):
-//
-//	name                        old time/op  new time/op  delta
-//	StringMaps/n=16/map-10      11.7ns ±28%   7.3ns ± 0%  -37.68%  (p=0.000 n=10+9)
-//	StringMaps/n=128/map-10     12.6ns ± 5%   7.4ns ± 3%  -41.44%  (p=0.000 n=9+9)
-//	StringMaps/n=1024/map-10    14.1ns ± 7%   7.6ns ± 3%  -46.30%  (p=0.000 n=10+10)
-//	StringMaps/n=8192/map-10    17.7ns ± 4%   7.9ns ± 1%  -55.39%  (p=0.000 n=10+10)
-//	StringMaps/n=131072/map-10  25.5ns ± 1%  14.0ns ± 1%  -45.20%  (p=0.000 n=10+10)
-//	Int64Maps/n=16/map-10       4.96ns ± 7%  4.83ns ± 0%   -2.72%  (p=0.012 n=10+9)
-//	Int64Maps/n=128/map-10      4.92ns ± 4%  4.89ns ± 5%     ~     (p=0.085 n=10+10)
-//	Int64Maps/n=1024/map-10     5.63ns ± 5%  5.01ns ± 2%  -11.02%  (p=0.000 n=10+10)
-//	Int64Maps/n=8192/map-10     11.1ns ± 4%   5.3ns ± 0%  -52.46%  (p=0.000 n=10+7)
-//	Int64Maps/n=131072/map-10   14.3ns ± 1%   6.7ns ± 0%  -53.33%  (p=0.000 n=10+9)
+//	name                                         old time/op  new time/op  delta
+//	StringMap/avgLoad,n=10/Map/PutDelete-10      26.3ns ±11%  23.3ns ± 2%  -11.41%  (p=0.000 n=10+8)
+//	StringMap/avgLoad,n=83/Map/PutDelete-10      31.6ns ± 7%  23.4ns ± 4%  -25.94%  (p=0.000 n=10+10)
+//	StringMap/avgLoad,n=671/Map/PutDelete-10     45.2ns ± 1%  23.5ns ± 1%  -47.96%  (p=0.000 n=10+9)
+//	StringMap/avgLoad,n=5375/Map/PutDelete-10    56.7ns ± 1%  24.3ns ± 3%  -57.25%  (p=0.000 n=10+10)
+//	StringMap/avgLoad,n=86015/Map/PutDelete-10   60.9ns ± 0%  38.9ns ± 3%  -36.17%  (p=0.000 n=9+10)
+//	Int64Map/avgLoad,n=10/Map/PutDelete-10       18.4ns ± 9%  15.8ns ±12%  -13.99%  (p=0.000 n=10+10)
+//	Int64Map/avgLoad,n=83/Map/PutDelete-10       19.6ns ± 4%  14.7ns ± 1%  -25.14%  (p=0.000 n=9+8)
+//	Int64Map/avgLoad,n=671/Map/PutDelete-10      27.1ns ± 2%  14.2ns ± 3%  -47.52%  (p=0.000 n=10+9)
+//	Int64Map/avgLoad,n=5375/Map/PutDelete-10     44.4ns ± 1%  16.0ns ± 2%  -63.93%  (p=0.000 n=10+8)
+//	Int64Map/avgLoad,n=86015/Map/PutDelete-10    50.6ns ± 0%  21.6ns ± 3%  -57.41%  (p=0.000 n=9+10)
 //
 // # Caveats
 //
@@ -136,6 +133,8 @@ type slot[K comparable, V any] struct {
 // Map is an unordered map from keys to values with Put, Get, Delete, and All
 // operations. It is inspired by Google's Swiss Tables design as implemented
 // in Abseil's flat_hash_map.
+//
+// A Map is NOT goroutine-safe.
 type Map[K comparable, V any] struct {
 	// ctrls is capacity+groupSize in length. Ctrls[capacity] is always
 	// ctrlSentinel which is used to stop probe iteration. A copy of the first
@@ -171,14 +170,18 @@ type Map[K comparable, V any] struct {
 // initialCapacity is 0 the map will start out with zero capacity and will
 // grow on the first insert. The zero value for an M is not usable.
 func New[K comparable, V any](initialCapacity int) *Map[K, V] {
+	// The ctrls for an empty map points to emptyCtrls which simplifies
+	// probing in Get, Put, and Delete. The emptyCtrls never match a probe
+	// operation, but because growthLeft == 0 if we try to insert we'll
+	// immediately rehash and grow.
 	m := &Map[K, V]{
 		ctrls: emptyCtrls,
 		hash:  getRuntimeHasher[K](),
 		seed:  uintptr(fastrand64()),
 	}
 	if initialCapacity > 0 {
-		targetCapacity := (1 << (uint(bits.Len(uint(2*initialCapacity-1))) - 1)) - 1
-		m.rehash(uintptr(targetCapacity))
+		targetCapacity := ^uintptr(0) >> bits.LeadingZeros64(uint64(initialCapacity))
+		m.resize(uintptr(targetCapacity))
 	}
 	return m
 }
@@ -464,11 +467,17 @@ func (m *Map[K, V]) wasNeverFull(i uintptr) bool {
 	indexBefore := (i - groupSize) & m.capacity
 	emptyAfter := m.ctrls.At(i).matchEmpty()
 	emptyBefore := m.ctrls.At(indexBefore).matchEmpty()
+	if debug {
+		fmt.Printf("wasNeverFull: before=%d/%s/%d after=%d/%s/%d\n",
+			indexBefore, emptyBefore, bits.LeadingZeros64(uint64(emptyBefore))>>3,
+			i, emptyAfter, bits.TrailingZeros64(uint64(emptyAfter))>>3)
+	}
 	// We count how many consecutive non empties we have to the right and to
 	// the left of i. If the sum is >= groupSize then there is at least one
 	// probe window that might have seen a full group.
 	if emptyBefore != 0 && emptyAfter != 0 &&
-		(emptyBefore.count()+emptyAfter.count()) < groupSize {
+		((bits.TrailingZeros64(uint64(emptyAfter))>>3)+
+			(bits.LeadingZeros64(uint64(emptyBefore))>>3)) < groupSize {
 		return true
 	}
 	return false
@@ -482,13 +491,7 @@ func (m *Map[K, V]) uncheckedPut(h uintptr, key K, value V) {
 	// overcrowded (i.e. the load factor is greater than 7/8 for big tables;
 	// small tables use a max load factor of 1).
 	if m.growthLeft == 0 {
-		// TODO(peter): We only have to rehash if the slot we're trying to
-		// insert into isn't deleted. Abseil handles this by first finding the
-		// slot to insert into and only resizing if that slot is not deleted.
-		// After resizing it has to re-find the slot to insert into, though
-		// the table should be <50% empty so the first group it checks should
-		// have an empty slot.
-		m.rehash(2*m.capacity + 1)
+		m.rehash()
 	}
 
 	// Given key and its hash hash(key), to insert it, we construct a
@@ -523,16 +526,35 @@ func (m *Map[K, V]) uncheckedPut(h uintptr, key K, value V) {
 	}
 }
 
-// rehash resize the capacity of the table by allocating a bigger array and
+func (m *Map[K, V]) rehash() {
+	// Rehash in place if the current used slots is <= 25/32 of capacity. The
+	// 25/32 heuristic comes from Abseil's implementation.
+	//
+	// The rationale for such a high factor: 1) rehashInPlace() is faster than
+	// resize(), and 2) it takes quite a bit of work to add tombstones. In the
+	// worst case it seems to take approximately 4 Put/Delete pairs to create
+	// a single tombstone. If we are rehashing because of tombstones we can
+	// afford to rehash-in-place as long as we are reclaiming at least 1/8 the
+	// capacity without doing more than 2X the work (where "work" is defined
+	// to be m.used for rehashing or rehashing in place, and 1 for an Put or
+	// Delete). But rehashing in place is faster per operation than inserting
+	// or even doubling the size of the table, so we actually afford to
+	// reclaim even less space from a rehash-in-place. The decision is to
+	// rehash in place if we can reclaim at about 1/8th of the usable capacity
+	// (specifically 3/28 of the capacity) which means that the total cost of
+	// rehashing will be a small fraction of the total work.
+	if false && uint64(m.used)*32 <= uint64(m.capacity)*25 { // 64-bit calcs to avoid overflow
+		m.rehashInPlace()
+	} else {
+		m.resize(2*m.capacity + 1)
+	}
+}
+
+// resize resize the capacity of the table by allocating a bigger array and
 // uncheckedPutting each element of the table into the new array (we know that
 // no insertion here will Put an already-present value), and discard the old
 // backing array.
-func (m *Map[K, V]) rehash(newCapacity uintptr) {
-	// TODO(peter): rehash in place if there are a sufficient number of
-	// tombstones to reclaim. See drop_deletes_without_resize() in the abseil
-	// implementation:
-	// https://github.com/abseil/abseil-cpp/blob/master/absl/container/internal/raw_hash_set.h#L311
-
+func (m *Map[K, V]) resize(newCapacity uintptr) {
 	if (1 + newCapacity) < groupSize {
 		newCapacity = groupSize - 1
 	}
@@ -573,6 +595,14 @@ func (m *Map[K, V]) rehash(newCapacity uintptr) {
 	}
 }
 
+func (m *Map[K, V]) rehashInPlace() {
+	// TODO(peter): rehash in place if there are a sufficient number of
+	// tombstones to reclaim. See drop_deletes_without_resize() in the abseil
+	// implementation:
+	// https://github.com/abseil/abseil-cpp/blob/master/absl/container/internal/raw_hash_set.h#L311
+	panic("TODO(peter): unimplemented")
+}
+
 type bitset uint64
 
 func (b bitset) next() uintptr {
@@ -581,10 +611,6 @@ func (b bitset) next() uintptr {
 
 func (b bitset) clear(i uintptr) bitset {
 	return b &^ (bitset(0x80) << (i << 3))
-}
-
-func (b bitset) count() int {
-	return bits.OnesCount64(uint64(b))
 }
 
 func (b bitset) String() string {
@@ -619,6 +645,12 @@ var emptyCtrls = func() unsafeSlice[ctrl] {
 }()
 
 func (c *ctrl) matchH2(h uintptr) bitset {
+	// NB: This generic matching routine produces false positive matches when
+	// h is 2^N and the control bytes have a seq of 2^N followed by 2^N+1. For
+	// example: if ctrls==0x0302 and h=02, we'll compute v as 0x0100. When we
+	// subtract off 0x0101 the first 2 bytes we'll become 0xffff and both be
+	// considered matches of h. The false positive matches are not a problem,
+	// just a rare inefficiency.
 	v := *(*uint64)((unsafe.Pointer)(c)) ^ (bitsetLSB * uint64(h))
 	return bitset(((v - bitsetLSB) &^ v) & bitsetMSB)
 }
@@ -626,11 +658,6 @@ func (c *ctrl) matchH2(h uintptr) bitset {
 func (c *ctrl) matchEmpty() bitset {
 	v := *(*uint64)((unsafe.Pointer)(c))
 	return bitset((v &^ (v << 6)) & bitsetMSB)
-}
-
-func (c *ctrl) matchFull() bitset {
-	v := *(*uint64)((unsafe.Pointer)(c))
-	return bitset((v ^ bitsetMSB) & bitsetMSB)
 }
 
 func (c *ctrl) matchEmptyOrDeleted() bitset {
@@ -664,7 +691,7 @@ type probeSeq struct {
 	index  uintptr
 }
 
-func makeProbeSeq(hash uintptr, mask uintptr) probeSeq {
+func makeProbeSeq(hash, mask uintptr) probeSeq {
 	return probeSeq{
 		mask:   mask,
 		offset: hash & mask,

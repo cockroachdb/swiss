@@ -12,36 +12,51 @@ performance Go's builtin map for small map sizes, and significantly better
 performance at large map sizes.
 
 ```
-name                        old time/op  new time/op  delta
-StringMaps/n=16/map-10      7.19ns ± 3%  7.28ns ± 0%     ~     (p=0.154 n=9+9)
-StringMaps/n=128/map-10     7.66ns ± 5%  7.37ns ± 3%   -3.74%  (p=0.008 n=10+9)
-StringMaps/n=1024/map-10    10.8ns ± 3%   7.6ns ± 3%  -29.76%  (p=0.000 n=10+10)
-StringMaps/n=8192/map-10    20.3ns ± 2%   7.9ns ± 1%  -61.16%  (p=0.000 n=10+10)
-StringMaps/n=131072/map-10  26.1ns ± 0%  14.0ns ± 1%  -46.56%  (p=0.000 n=10+10)
-Int64Maps/n=16/map-10       4.96ns ± 1%  4.83ns ± 0%   -2.73%  (p=0.000 n=9+9)
-Int64Maps/n=128/map-10      5.19ns ± 3%  4.89ns ± 5%   -5.80%  (p=0.000 n=10+10)
-Int64Maps/n=1024/map-10     6.80ns ± 5%  5.01ns ± 2%  -26.32%  (p=0.000 n=10+10)
-Int64Maps/n=8192/map-10     17.4ns ± 1%   5.3ns ± 0%  -69.59%  (p=0.000 n=10+7)
-Int64Maps/n=131072/map-10   20.6ns ± 0%   6.7ns ± 0%  -67.67%  (p=0.000 n=10+9)
+name                                         old time/op  new time/op  delta
+StringMap/avgLoad,n=10/Map/Get-10            9.53ns ± 6%  8.43ns ± 1%  -11.50%  (p=0.000 n=10+9)
+StringMap/avgLoad,n=83/Map/Get-10            11.0ns ± 9%   9.2ns ±11%  -16.57%  (p=0.000 n=10+10)
+StringMap/avgLoad,n=671/Map/Get-10           15.7ns ± 3%   9.0ns ± 3%  -42.31%  (p=0.000 n=10+10)
+StringMap/avgLoad,n=5375/Map/Get-10          25.8ns ± 1%   9.3ns ± 1%  -63.88%  (p=0.000 n=10+10)
+StringMap/avgLoad,n=86015/Map/Get-10         30.5ns ± 1%  10.9ns ± 2%  -64.34%  (p=0.000 n=9+10)
+Int64Map/avgLoad,n=10/Map/Get-10             5.11ns ± 3%  4.85ns ± 1%   -5.13%  (p=0.000 n=10+10)
+Int64Map/avgLoad,n=83/Map/Get-10             5.23ns ± 3%  5.18ns ± 7%     ~     (p=0.529 n=10+10)
+Int64Map/avgLoad,n=671/Map/Get-10            6.03ns ± 7%  5.36ns ± 5%  -11.08%  (p=0.000 n=10+10)
+Int64Map/avgLoad,n=5375/Map/Get-10           18.3ns ± 2%   5.7ns ± 2%  -68.76%  (p=0.000 n=10+10)
+Int64Map/avgLoad,n=86015/Map/Get-10          23.9ns ± 1%   6.9ns ± 0%  -71.24%  (p=0.000 n=10+9)
+
+name                                         old time/op  new time/op  delta
+StringMap/avgLoad,n=10/Map/PutDelete-10      26.3ns ±11%  23.3ns ± 2%  -11.41%  (p=0.000 n=10+8)
+StringMap/avgLoad,n=83/Map/PutDelete-10      31.6ns ± 7%  23.4ns ± 4%  -25.94%  (p=0.000 n=10+10)
+StringMap/avgLoad,n=671/Map/PutDelete-10     45.2ns ± 1%  23.5ns ± 1%  -47.96%  (p=0.000 n=10+9)
+StringMap/avgLoad,n=5375/Map/PutDelete-10    56.7ns ± 1%  24.3ns ± 3%  -57.25%  (p=0.000 n=10+10)
+StringMap/avgLoad,n=86015/Map/PutDelete-10   60.9ns ± 0%  38.9ns ± 3%  -36.17%  (p=0.000 n=9+10)
+Int64Map/avgLoad,n=10/Map/PutDelete-10       18.4ns ± 9%  15.8ns ±12%  -13.99%  (p=0.000 n=10+10)
+Int64Map/avgLoad,n=83/Map/PutDelete-10       19.6ns ± 4%  14.7ns ± 1%  -25.14%  (p=0.000 n=9+8)
+Int64Map/avgLoad,n=671/Map/PutDelete-10      27.1ns ± 2%  14.2ns ± 3%  -47.52%  (p=0.000 n=10+9)
+Int64Map/avgLoad,n=5375/Map/PutDelete-10     44.4ns ± 1%  16.0ns ± 2%  -63.93%  (p=0.000 n=10+8)
+Int64Map/avgLoad,n=86015/Map/PutDelete-10    50.6ns ± 0%  21.6ns ± 3%  -57.41%  (p=0.000 n=9+10)
 ```
 
 ## Caveats
 
 - Resizing a `swiss.Map` is done for the whole table rather than the
-incremental resizing performed by Go's builtin map.
+  incremental resizing performed by Go's builtin map.
+- The implementation currently requires a little endian CPU architecture. This
+  is not a fundamental limitation of the implementation, merely a choice of
+  expediency.
 
 ## TODO
 
-- Add correctness tests.
 - Add support for rehash in-place.
-- Add support for SIMD searching on x86.
-- Add support for 8-byte Neon SIMD searching:
-  https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/porting-x86-vector-bitmask-optimizations-to-arm-neon
-  https://github.com/abseil/abseil-cpp/commit/6481443560a92d0a3a55a31807de0cd712cd4f88
+- Add support for SIMD searching on x86 and (8-byte Neon SIMD searching on
+  arm64)[https://github.com/abseil/abseil-cpp/commit/6481443560a92d0a3a55a31807de0cd712cd4f88]
+  - This appears to be somewhat difficult. Naively implementing the match
+    routines in assembly isn't workable as the function call overhead
+    dominates the performance improvement form the SIMD comparisons. The
+    Abseil implementation is leveraring gcc/llvm assembly intrinsics which are
+    not currently available in Go. In order to take advantage of SIMD we'll
+    have to write most/all of the probing loop in assembly.
 - Abstract out the slice allocations so we can use manual memory allocation
   when used inside Pebble.
-- Benchmark insertion and deletion.
-- Add a note on thread safety (there isn't any).
-- Add a note that a little endian system is required, and a test that asserts that.
 - Explore extendible hashing to allow incremental resizing. See
   https://github.com/golang/go/issues/54766#issuecomment-1233125048
