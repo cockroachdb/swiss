@@ -118,15 +118,17 @@ const (
 	bitsetDeleted = bitsetLSB * uint64(ctrlDeleted)
 )
 
-// slot holds a key and value.
-type slot[K comparable, V any] struct {
+// Slot holds a key and value.
+type Slot[K comparable, V any] struct {
 	key   K
 	value V
 }
 
 // Map is an unordered map from keys to values with Put, Get, Delete, and All
 // operations. It is inspired by Google's Swiss Tables design as implemented
-// in Abseil's flat_hash_map.
+// in Abseil's flat_hash_map. By default, a Map[K,V] uses the same hash
+// function as Go's builtin map[K]V, though a different hash function can be
+// specified using the WithHash option.
 //
 // A Map is NOT goroutine-safe.
 type Map[K comparable, V any] struct {
@@ -141,11 +143,13 @@ type Map[K comparable, V any] struct {
 	// doesn't have to check for a nil ctrls.
 	ctrls unsafeSlice[ctrl]
 	// slots is capacity in length.
-	slots unsafeSlice[slot[K, V]]
+	slots unsafeSlice[Slot[K, V]]
 	// The hash function to each keys of type K. The hash function is
 	// extracted from the Go runtime's implementation of map[K]struct{}.
-	hash func(key unsafe.Pointer, seed uintptr) uintptr
+	hash hashFn
 	seed uintptr
+	// The allocator to use for the ctrls and slots slices.
+	allocator Allocator[K, V]
 	// The total number slots (always 2^N-1). The capacity is used as a mask
 	// to quickly compute i%N using a bitwise & operation.
 	capacity uintptr
@@ -163,16 +167,22 @@ type Map[K comparable, V any] struct {
 // New constructs a new M with the specified initial capacity. If
 // initialCapacity is 0 the map will start out with zero capacity and will
 // grow on the first insert. The zero value for an M is not usable.
-func New[K comparable, V any](initialCapacity int) *Map[K, V] {
+func New[K comparable, V any](initialCapacity int, options ...option[K, V]) *Map[K, V] {
 	// The ctrls for an empty map points to emptyCtrls which simplifies
 	// probing in Get, Put, and Delete. The emptyCtrls never match a probe
 	// operation, but because growthLeft == 0 if we try to insert we'll
 	// immediately rehash and grow.
 	m := &Map[K, V]{
-		ctrls: emptyCtrls,
-		hash:  getRuntimeHasher[K](),
-		seed:  uintptr(fastrand64()),
+		ctrls:     emptyCtrls,
+		hash:      getRuntimeHasher[K](),
+		seed:      uintptr(fastrand64()),
+		allocator: defaultAllocator[K, V]{},
 	}
+
+	for _, op := range options {
+		op.apply(m)
+	}
+
 	if initialCapacity > 0 {
 		// targetCapacity is the smallest value of the form 2^k-1 that is >=
 		// initialCapacity.
@@ -180,6 +190,22 @@ func New[K comparable, V any](initialCapacity int) *Map[K, V] {
 		m.resize(targetCapacity)
 	}
 	return m
+}
+
+// Close closes the map, releasing any memory back to its configured
+// allocator. It is unnecessary to close a map using the default allocator. It
+// is invalid to use a Map after it has been closed, though Close itself is
+// idempotent.
+func (m *Map[K, V]) Close() {
+	if m.capacity > 0 {
+		m.allocator.FreeSlots(m.slots.Slice(0, m.capacity))
+		m.allocator.FreeControls(unsafeConvertSlice[uint8](m.ctrls.Slice(0, m.capacity+groupSize)))
+		m.capacity = 0
+		m.used = 0
+	}
+	m.ctrls = makeUnsafeSlice([]ctrl(nil))
+	m.slots = makeUnsafeSlice([]Slot[K, V](nil))
+	m.allocator = nil
 }
 
 // Put inserts an entry into the map, overwriting an existing value if an
@@ -352,7 +378,7 @@ func (m *Map[K, V]) Delete(key K) {
 			s := m.slots.At(i)
 			if key == s.key {
 				m.used--
-				*s = slot[K, V]{}
+				*s = Slot[K, V]{}
 
 				// Given an offset to delete we simply create a tombstone and
 				// destroy its contents and mark the ctrl as deleted. If we
@@ -585,8 +611,9 @@ func (m *Map[K, V]) resize(newCapacity uintptr) {
 	}
 
 	oldCtrls, oldSlots := m.ctrls, m.slots
-	m.slots = makeUnsafeSlice(make([]slot[K, V], newCapacity))
-	m.ctrls = makeUnsafeSlice(make([]ctrl, newCapacity+groupSize))
+	m.slots = makeUnsafeSlice(m.allocator.AllocSlots(int(newCapacity)))
+	m.ctrls = makeUnsafeSlice(unsafeConvertSlice[ctrl](
+		m.allocator.AllocControls(int(newCapacity + groupSize))))
 	for i := uintptr(0); i < newCapacity+groupSize; i++ {
 		*m.ctrls.At(i) = ctrlEmpty
 	}
@@ -617,6 +644,11 @@ func (m *Map[K, V]) resize(newCapacity uintptr) {
 		slot := oldSlots.At(i)
 		h := m.hash(noescape(unsafe.Pointer(&slot.key)), m.seed)
 		m.uncheckedPut(h, slot.key, slot.value)
+	}
+
+	if oldCapacity > 0 {
+		m.allocator.FreeSlots(oldSlots.Slice(0, oldCapacity))
+		m.allocator.FreeControls(unsafeConvertSlice[uint8](oldCtrls.Slice(0, oldCapacity+groupSize)))
 	}
 }
 
@@ -703,7 +735,7 @@ func (m *Map[K, V]) rehashInPlace() {
 			// empty slot and mark the slot at index i as empty.
 			m.setCtrl(target, ctrl(h2(h)))
 			*m.slots.At(target) = *m.slots.At(i)
-			*m.slots.At(i) = slot[K, V]{}
+			*m.slots.At(i) = Slot[K, V]{}
 			m.setCtrl(i, ctrlEmpty)
 			continue
 		}
@@ -924,4 +956,8 @@ func (s unsafeSlice[T]) At(i uintptr) *T {
 // Slice returns a Go slice akin to slice[start:end] for a Go builtin slice.
 func (s unsafeSlice[T]) Slice(start, end uintptr) []T {
 	return unsafe.Slice((*T)(s.ptr), end)[start:end]
+}
+
+func unsafeConvertSlice[Dest any, Src any](s []Src) []Dest {
+	return unsafe.Slice((*Dest)(unsafe.Pointer(unsafe.SliceData(s))), len(s))
 }
