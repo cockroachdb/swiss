@@ -3,11 +3,7 @@ package swiss
 import (
 	"fmt"
 	"math/rand"
-<<<<<<< HEAD
 	"sort"
-=======
-	"slices"
->>>>>>> a01434a (swiss: add correctness tests and improve benchmarking)
 	"testing"
 	"unsafe"
 
@@ -139,6 +135,32 @@ func TestMatchEmptyOrDeleted(t *testing.T) {
 			}
 			require.Equal(t, c.expected, results)
 		})
+	}
+}
+
+func TestConvertDeletedToEmptyAndFullToDeleted(t *testing.T) {
+	ctrls := make([]ctrl, groupSize)
+	expected := make([]ctrl, groupSize)
+	for i := 0; i < 100; i++ {
+		for j := 0; j < groupSize; j++ {
+			switch rand.Intn(4) {
+			case 0: // 25% empty
+				ctrls[j] = ctrlEmpty
+				expected[j] = ctrlEmpty
+			case 1: // 25% deleted
+				ctrls[j] = ctrlDeleted
+				expected[j] = ctrlEmpty
+			case 2: // 25% sentinel
+				ctrls[j] = ctrlDeleted
+				expected[j] = ctrlEmpty
+			default: // 25% full
+				ctrls[j] = ctrl(rand.Intn(127))
+				expected[j] = ctrlDeleted
+			}
+		}
+
+		ctrls[0].convertDeletedToEmptyAndFullToDeleted()
+		require.EqualValues(t, expected, ctrls)
 	}
 }
 
@@ -318,7 +340,8 @@ func TestRandom(t *testing.T) {
 						}
 						require.EqualValues(t, e[k], v)
 					}
-				default: // 5% iteration
+				default: // 5% rehash in place and iterate
+					m.rehashInPlace()
 					require.Equal(t, e, m.toBuiltinMap())
 				}
 				require.EqualValues(t, len(e), m.Len())
