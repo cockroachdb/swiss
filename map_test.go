@@ -3,11 +3,7 @@ package swiss
 import (
 	"fmt"
 	"math/rand"
-<<<<<<< HEAD
 	"sort"
-=======
-	"slices"
->>>>>>> a01434a (swiss: add correctness tests and improve benchmarking)
 	"testing"
 	"unsafe"
 
@@ -138,6 +134,22 @@ func TestMatchEmptyOrDeleted(t *testing.T) {
 				match = match.clear(bit)
 			}
 			require.Equal(t, c.expected, results)
+		})
+	}
+}
+
+func TestConvertDeletedToEmptyAndFullToDeleted(t *testing.T) {
+	testCases := []struct {
+		ctrls    uint64
+		expected uint64
+	}{
+		{0xff11fe2280334455, 0x80fe80fe80fefefe},
+	}
+	for _, c := range testCases {
+		t.Run("", func(t *testing.T) {
+			ctrls := (*ctrl)(unsafe.Pointer(&c.ctrls))
+			ctrls.convertDeletedToEmptyAndFullToDeleted()
+			require.EqualValues(t, c.expected, c.ctrls)
 		})
 	}
 }
