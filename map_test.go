@@ -3,7 +3,11 @@ package swiss
 import (
 	"fmt"
 	"math/rand"
+<<<<<<< HEAD
 	"sort"
+=======
+	"slices"
+>>>>>>> a01434a (swiss: add correctness tests and improve benchmarking)
 	"testing"
 	"unsafe"
 
