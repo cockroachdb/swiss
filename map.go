@@ -71,34 +71,28 @@
 // new=swissmap):
 //
 //	name                                         old time/op  new time/op  delta
-//	StringMap/avgLoad,n=10/Map/Get-10            9.53ns ± 6%  8.43ns ± 1%  -11.50%  (p=0.000 n=10+9)
-//	StringMap/avgLoad,n=83/Map/Get-10            11.0ns ± 9%   9.2ns ±11%  -16.57%  (p=0.000 n=10+10)
-//	StringMap/avgLoad,n=671/Map/Get-10           15.7ns ± 3%   9.0ns ± 3%  -42.31%  (p=0.000 n=10+10)
-//	StringMap/avgLoad,n=5375/Map/Get-10          25.8ns ± 1%   9.3ns ± 1%  -63.88%  (p=0.000 n=10+10)
-//	StringMap/avgLoad,n=86015/Map/Get-10         30.5ns ± 1%  10.9ns ± 2%  -64.34%  (p=0.000 n=9+10)
-//	Int64Map/avgLoad,n=10/Map/Get-10             5.11ns ± 3%  4.85ns ± 1%   -5.13%  (p=0.000 n=10+10)
-//	Int64Map/avgLoad,n=83/Map/Get-10             5.23ns ± 3%  5.18ns ± 7%     ~     (p=0.529 n=10+10)
-//	Int64Map/avgLoad,n=671/Map/Get-10            6.03ns ± 7%  5.36ns ± 5%  -11.08%  (p=0.000 n=10+10)
-//	Int64Map/avgLoad,n=5375/Map/Get-10           18.3ns ± 2%   5.7ns ± 2%  -68.76%  (p=0.000 n=10+10)
-//	Int64Map/avgLoad,n=86015/Map/Get-10          23.9ns ± 1%   6.9ns ± 0%  -71.24%  (p=0.000 n=10+9)
+//	StringMap/avgLoad,n=10/Map/Get-10            9.46ns ± 4%  8.43ns ± 1%  -10.89%  (p=0.000 n=10+9)
+//	StringMap/avgLoad,n=83/Map/Get-10            10.9ns ± 7%   8.9ns ±12%  -18.45%  (p=0.000 n=10+10)
+//	StringMap/avgLoad,n=671/Map/Get-10           15.4ns ± 3%   9.1ns ± 3%  -40.98%  (p=0.000 n=10+10)
+//	StringMap/avgLoad,n=5375/Map/Get-10          25.8ns ± 1%   9.3ns ± 1%  -63.83%  (p=0.000 n=10+9)
+//	StringMap/avgLoad,n=86015/Map/Get-10         30.4ns ± 1%  10.8ns ± 1%  -64.49%  (p=0.000 n=9+9)
+//	Int64Map/avgLoad,n=10/Map/Get-10             5.05ns ± 2%  4.87ns ± 1%   -3.60%  (p=0.000 n=10+10)
+//	Int64Map/avgLoad,n=83/Map/Get-10             5.27ns ± 5%  5.29ns ±12%     ~     (p=0.912 n=10+10)
+//	Int64Map/avgLoad,n=671/Map/Get-10            6.14ns ± 4%  5.35ns ± 3%  -12.85%  (p=0.000 n=10+10)
+//	Int64Map/avgLoad,n=5375/Map/Get-10           18.4ns ± 4%   5.7ns ± 2%  -68.94%  (p=0.000 n=10+10)
+//	Int64Map/avgLoad,n=86015/Map/Get-10          23.9ns ± 0%   6.9ns ± 0%  -71.35%  (p=0.000 n=10+8)
 //
 //	name                                         old time/op  new time/op  delta
-//	StringMap/avgLoad,n=10/Map/PutDelete-10      26.3ns ±11%  23.3ns ± 2%  -11.41%  (p=0.000 n=10+8)
-//	StringMap/avgLoad,n=83/Map/PutDelete-10      31.6ns ± 7%  23.4ns ± 4%  -25.94%  (p=0.000 n=10+10)
-//	StringMap/avgLoad,n=671/Map/PutDelete-10     45.2ns ± 1%  23.5ns ± 1%  -47.96%  (p=0.000 n=10+9)
-//	StringMap/avgLoad,n=5375/Map/PutDelete-10    56.7ns ± 1%  24.3ns ± 3%  -57.25%  (p=0.000 n=10+10)
-//	StringMap/avgLoad,n=86015/Map/PutDelete-10   60.9ns ± 0%  38.9ns ± 3%  -36.17%  (p=0.000 n=9+10)
-//	Int64Map/avgLoad,n=10/Map/PutDelete-10       18.4ns ± 9%  15.8ns ±12%  -13.99%  (p=0.000 n=10+10)
-//	Int64Map/avgLoad,n=83/Map/PutDelete-10       19.6ns ± 4%  14.7ns ± 1%  -25.14%  (p=0.000 n=9+8)
-//	Int64Map/avgLoad,n=671/Map/PutDelete-10      27.1ns ± 2%  14.2ns ± 3%  -47.52%  (p=0.000 n=10+9)
-//	Int64Map/avgLoad,n=5375/Map/PutDelete-10     44.4ns ± 1%  16.0ns ± 2%  -63.93%  (p=0.000 n=10+8)
-//	Int64Map/avgLoad,n=86015/Map/PutDelete-10    50.6ns ± 0%  21.6ns ± 3%  -57.41%  (p=0.000 n=9+10)
-//
-// # Caveats
-//
-//   - Resizing for a swiss.Map is done for the whole table rather than the
-//     incremental resizing performed by Go's builtin map. This is pretty
-//     fundamental to the usage of open-addressing.
+//	StringMap/avgLoad,n=10/Map/PutDelete-10      25.4ns ± 6%  23.7ns ± 8%   -6.43%  (p=0.004 n=10+10)
+//	StringMap/avgLoad,n=83/Map/PutDelete-10      31.4ns ± 7%  24.3ns ±12%  -22.66%  (p=0.000 n=10+10)
+//	StringMap/avgLoad,n=671/Map/PutDelete-10     45.4ns ± 3%  24.9ns ± 4%  -45.21%  (p=0.000 n=10+10)
+//	StringMap/avgLoad,n=5375/Map/PutDelete-10    56.7ns ± 1%  24.7ns ± 2%  -56.44%  (p=0.000 n=10+10)
+//	StringMap/avgLoad,n=86015/Map/PutDelete-10   60.8ns ± 1%  31.6ns ± 2%  -48.03%  (p=0.000 n=9+9)
+//	Int64Map/avgLoad,n=10/Map/PutDelete-10       18.0ns ± 3%  17.1ns ±34%     ~     (p=0.095 n=9+10)
+//	Int64Map/avgLoad,n=83/Map/PutDelete-10       19.8ns ± 3%  14.6ns ±12%  -26.11%  (p=0.000 n=9+9)
+//	Int64Map/avgLoad,n=671/Map/PutDelete-10      27.2ns ± 3%  15.2ns ± 6%  -44.02%  (p=0.000 n=10+10)
+//	Int64Map/avgLoad,n=5375/Map/PutDelete-10     44.5ns ± 0%  16.9ns ± 3%  -62.10%  (p=0.000 n=7+10)
+//	Int64Map/avgLoad,n=86015/Map/PutDelete-10    50.8ns ± 0%  21.0ns ± 1%  -58.65%  (p=0.000 n=10+10)
 package swiss
 
 import (
@@ -559,23 +553,22 @@ func (m *Map[K, V]) uncheckedPut(h uintptr, key K, value V) {
 }
 
 func (m *Map[K, V]) rehash() {
-	// Rehash in place if the current used slots is <= 25/32 of capacity. The
-	// 25/32 heuristic comes from Abseil's implementation.
+	// Rehash in place if we can recover >= 1/3 of the capacity. Note that
+	// this heuristic differs from Abseil's and was experimentally determined
+	// to balance performance on the PutDelete benchmark vs achieving a
+	// reasonable load-factor.
 	//
-	// The rationale for such a high factor: 1) rehashInPlace() is faster than
-	// resize(), and 2) it takes quite a bit of work to add tombstones. In the
-	// worst case it seems to take approximately 4 Put/Delete pairs to create
-	// a single tombstone. If we are rehashing because of tombstones we can
-	// afford to rehash-in-place as long as we are reclaiming at least 1/8 the
-	// capacity without doing more than 2X the work (where "work" is defined
-	// to be m.used for rehashing or rehashing in place, and 1 for an Put or
-	// Delete). But rehashing in place is faster per operation than inserting
-	// or even doubling the size of the table, so we actually afford to
-	// reclaim even less space from a rehash-in-place. The decision is to
-	// rehash in place if we can reclaim at about 1/8th of the usable capacity
-	// (specifically 3/28 of the capacity) which means that the total cost of
-	// rehashing will be a small fraction of the total work.
-	if false && uint64(m.used)*32 <= uint64(m.capacity)*25 { // 64-bit calcs to avoid overflow
+	// Abseil notes that in the worst case it takes ~4 Put/Delete pairs to
+	// create a single tombstone. Rehashing in place is significantly faster
+	// than resizing because the common case is that elements remain in their
+	// current location. The performance of rehashInPlace is dominated by
+	// recomputing the hash of every key. We know how much space we're going
+	// to reclaim because every tombstone will be dropped and we're only
+	// called if we've reached the thresold of capacity/8 empty slots. So the
+	// number of tomstones is capacity*7/8 - used.
+
+	recoverable := (m.capacity*maxAvgGroupLoad)/groupSize - uintptr(m.used)
+	if m.capacity > groupSize && recoverable >= m.capacity/3 {
 		m.rehashInPlace()
 	} else {
 		m.resize(2*m.capacity + 1)
@@ -612,7 +605,7 @@ func (m *Map[K, V]) resize(newCapacity uintptr) {
 	m.capacity = newCapacity
 
 	if debug {
-		fmt.Printf("rehash: capacity=%d->%d  growth-left=%d\n",
+		fmt.Printf("resize: capacity=%d->%d  growth-left=%d\n",
 			oldCapacity, newCapacity, m.growthLeft)
 	}
 
@@ -628,11 +621,145 @@ func (m *Map[K, V]) resize(newCapacity uintptr) {
 }
 
 func (m *Map[K, V]) rehashInPlace() {
-	// TODO(peter): rehash in place if there are a sufficient number of
-	// tombstones to reclaim. See drop_deletes_without_resize() in the abseil
-	// implementation:
-	// https://github.com/abseil/abseil-cpp/blob/master/absl/container/internal/raw_hash_set.h#L311
-	panic("TODO(peter): unimplemented")
+	if debug {
+		fmt.Printf("rehash: %d/%d\n", m.used, m.capacity)
+		for i := uintptr(0); i < m.capacity; i++ {
+			switch *m.ctrls.At(i) {
+			case ctrlEmpty:
+				fmt.Printf("  %d: empty\n", i)
+			case ctrlDeleted:
+				fmt.Printf("  %d: deleted\n", i)
+			case ctrlSentinel:
+				fmt.Printf("  %d: sentinel\n", i)
+			default:
+				fmt.Printf("  %d: %v\n", i, m.slots.At(i).key)
+			}
+		}
+	}
+
+	// We want to drop all of the deletes in place. We first walk over the
+	// control bytes and mark every DELETED slot as EMPTY and every FULL slot
+	// as DELETED. Marking the DELETED slots as EMPTY has effectively dropped
+	// the tombstones, but we fouled up the probe invariant. Marking the FULL
+	// slots as DELETED gives us a marker to locate the previously FULL slots.
+
+	// Mark all DELETED slots as EMPTY and all FULL slots as DELETED.
+	for i := uintptr(0); i < m.capacity; i += groupSize {
+		m.ctrls.At(i).convertDeletedToEmptyAndFullToDeleted()
+	}
+
+	// Fixup the cloned control bytes and the sentinel.
+	for i, n := uintptr(0), uintptr(groupSize-1); i < n; i++ {
+		*m.ctrls.At(((i - (groupSize - 1)) & m.capacity) + (groupSize - 1)) = *m.ctrls.At(i)
+	}
+	*m.ctrls.At(m.capacity) = ctrlSentinel
+
+	// Now we walk over all of the DELETED slots (a.k.a. the previously FULL
+	// slots). For each slot we find the first probe group we can place the
+	// element in which reestablishes the probe invariant. Note that as this
+	// loop proceeds we have the invariant that there are no DELETED slots in
+	// the range [0, i). We may move the element at i to the range [0, i) if
+	// that is where the first group with an empty slot in its probe chain
+	// resides, but we never set a slot in [0, i) to DELETED.
+	for i := uintptr(0); i < m.capacity; i++ {
+		if *m.ctrls.At(i) != ctrlDeleted {
+			continue
+		}
+
+		s := m.slots.At(i)
+		h := m.hash(noescape(unsafe.Pointer(&s.key)), m.seed)
+		seq := makeProbeSeq(h1(h), m.capacity)
+		desired := seq
+
+		probeIndex := func(pos uintptr) uintptr {
+			return ((pos - desired.offset) & m.capacity) / groupSize
+		}
+
+		var target uintptr
+		for ; ; seq = seq.next() {
+			g := m.ctrls.At(seq.offset)
+			if match := g.matchEmptyOrDeleted(); match != 0 {
+				target = seq.offsetAt(match.next())
+				break
+			}
+		}
+
+		if i == target || probeIndex(i) == probeIndex(target) {
+			if debug {
+				fmt.Printf("rehash: %d not moving\n", i)
+			}
+			// If the target index falls within the first probe group
+			// then we don't need to move the element as it already
+			// falls in the best probe position.
+			m.setCtrl(i, ctrl(h2(h)))
+			continue
+		}
+
+		if *m.ctrls.At(target) == ctrlEmpty {
+			if debug {
+				fmt.Printf("rehash: %d -> %d replacing empty\n", i, target)
+			}
+			// The target slot is empty. Transfer the element to the
+			// empty slot and mark the slot at index i as empty.
+			m.setCtrl(target, ctrl(h2(h)))
+			*m.slots.At(target) = *m.slots.At(i)
+			*m.slots.At(i) = slot[K, V]{}
+			m.setCtrl(i, ctrlEmpty)
+			continue
+		}
+
+		if *m.ctrls.At(target) == ctrlDeleted {
+			if debug {
+				fmt.Printf("rehash: %d -> %d swapping\n", i, target)
+			}
+			// The slot at target has an element (i.e. it was FULL).
+			// We're going to swap our current element with that
+			// element and then repeat processing of index i which now
+			// holds the element which was at target.
+			m.setCtrl(target, ctrl(h2(h)))
+			t := m.slots.At(target)
+			*s, *t = *t, *s
+			// Repeat processing of the i'th slot which now holds a
+			// new key/value.
+			i--
+			continue
+		}
+
+		panic(fmt.Sprintf("ctrl at position %d (%02x) should be empty or deleted",
+			target, *m.ctrls.At(target)))
+	}
+
+	m.growthLeft = int((m.capacity*maxAvgGroupLoad)/groupSize) - m.used
+
+	if debug {
+		fmt.Printf("rehash: done\n")
+		for i := uintptr(0); i < m.capacity; i++ {
+			switch *m.ctrls.At(i) {
+			case ctrlEmpty:
+				fmt.Printf("  %d: empty\n", i)
+			case ctrlDeleted:
+				fmt.Printf("  %d: deleted\n", i)
+			case ctrlSentinel:
+				fmt.Printf("  %d: sentinel\n", i)
+			default:
+				s := m.slots.At(i)
+				h := m.hash(noescape(unsafe.Pointer(&s.key)), m.seed)
+				fmt.Printf("  %d: %02x/%02x %v\n", i, *m.ctrls.At(i), h2(h), s.key)
+			}
+		}
+
+		for i := uintptr(0); i < m.capacity; i++ {
+			if (*m.ctrls.At(i) & ctrlEmpty) != ctrlEmpty {
+				s := m.slots.At(i)
+				_, ok := m.Get(s.key)
+				if !ok {
+					h := m.hash(noescape(unsafe.Pointer(&s.key)), m.seed)
+					fmt.Printf("%d: %02x %v not found\n", i, h2(h), s.key)
+					panic("not reached")
+				}
+			}
+		}
+	}
 }
 
 type bitset uint64
@@ -682,7 +809,9 @@ func (c *ctrl) matchH2(h uintptr) bitset {
 	// example: if ctrls==0x0302 and h=02, we'll compute v as 0x0100. When we
 	// subtract off 0x0101 the first 2 bytes we'll become 0xffff and both be
 	// considered matches of h. The false positive matches are not a problem,
-	// just a rare inefficiency.
+	// just a rare inefficiency. Note that they only occur if there is a real
+	// match and never occur on ctrlEmpty, ctrlDeleted, or ctrlSentinel. The
+	// subsequent key comparisons ensure that there is no correctness issue.
 	v := *(*uint64)((unsafe.Pointer)(c)) ^ (bitsetLSB * uint64(h))
 	return bitset(((v - bitsetLSB) &^ v) & bitsetMSB)
 }
@@ -695,6 +824,12 @@ func (c *ctrl) matchEmpty() bitset {
 func (c *ctrl) matchEmptyOrDeleted() bitset {
 	v := *(*uint64)((unsafe.Pointer)(c))
 	return bitset((v &^ (v << 7)) & bitsetMSB)
+}
+
+func (c *ctrl) convertDeletedToEmptyAndFullToDeleted() {
+	p := (*uint64)((unsafe.Pointer)(c))
+	v := *p & bitsetMSB
+	*p = (^v + (v >> 7)) &^ bitsetLSB
 }
 
 // probeSeq maintains the state for a probe sequence. The sequence is a
