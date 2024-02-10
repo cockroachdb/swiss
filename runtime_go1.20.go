@@ -15,7 +15,7 @@ import "unsafe"
 //go:linkname fastrand64 runtime.fastrand64
 func fastrand64() uint64
 
-type hashfn func(unsafe.Pointer, uintptr) uintptr
+type hashFn func(key unsafe.Pointer, seed uintptr) uintptr
 
 // getRuntimeHasher peeks inside the internals of map[K]struct{} and extracts
 // the function the runtime generated for hashing type K. This is a bit hacky,
@@ -31,7 +31,7 @@ type hashfn func(unsafe.Pointer, uintptr) uintptr
 //
 // https://github.com/dolthub/maphash provided the inspiration and general
 // implementation technique.
-func getRuntimeHasher[K comparable]() hashfn {
+func getRuntimeHasher[K comparable]() hashFn {
 	a := any((map[K]struct{})(nil))
 	return (*rtEface)(unsafe.Pointer(&a)).typ.Hasher
 }

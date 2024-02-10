@@ -60,7 +60,5 @@ Int64Map/avgLoad,n=86015/Map/PutDelete-10    50.8ns ± 0%  21.0ns ± 1%  -58.65%
     Abseil implementation is leveraring gcc/llvm assembly intrinsics which are
     not currently available in Go. In order to take advantage of SIMD we'll
     have to write most/all of the probing loop in assembly.
-- Abstract out the slice allocations so we can use manual memory allocation
-  when used inside Pebble.
 - Explore extendible hashing to allow incremental resizing. See
   https://github.com/golang/go/issues/54766#issuecomment-1233125048

@@ -228,18 +228,12 @@ func TestInitialCapacity(t *testing.T) {
 }
 
 func TestBasic(t *testing.T) {
-	goodHash := func() *Map[int, int] {
-		return New[int, int](0)
-	}
-	badHash := func() *Map[int, int] {
-		m := goodHash()
-		m.hash = func(key unsafe.Pointer, seed uintptr) uintptr {
-			return 0
-		}
-		return m
-	}
+	goodHash := New[int, int](0)
+	badHash := New[int, int](0, WithHash[int, int](func(key *int, seed uintptr) uintptr {
+		return 0
+	}))
 
-	for _, m := range []*Map[int, int]{goodHash(), badHash()} {
+	for _, m := range []*Map[int, int]{goodHash, badHash} {
 		t.Run("", func(t *testing.T) {
 			e := make(map[int]int)
 			require.EqualValues(t, 0, m.Len())
@@ -287,18 +281,12 @@ func TestBasic(t *testing.T) {
 }
 
 func TestRandom(t *testing.T) {
-	goodHash := func() *Map[int, int] {
-		return New[int, int](0)
-	}
-	badHash := func() *Map[int, int] {
-		m := goodHash()
-		m.hash = func(key unsafe.Pointer, seed uintptr) uintptr {
-			return 0
-		}
-		return m
-	}
+	goodHash := New[int, int](0)
+	badHash := New[int, int](0, WithHash[int, int](func(key *int, seed uintptr) uintptr {
+		return 0
+	}))
 
-	for _, m := range []*Map[int, int]{goodHash(), badHash()} {
+	for _, m := range []*Map[int, int]{goodHash, badHash} {
 		t.Run("", func(t *testing.T) {
 			e := make(map[int]int)
 			for i := 0; i < 10000; i++ {
@@ -371,6 +359,52 @@ func TestIterateMutate(t *testing.T) {
 		return true
 	})
 	require.EqualValues(t, e, vals)
+}
+
+type countingAllocator[K comparable, V any] struct {
+	allocSlots int
+	allocCtrls int
+	freeSlots  int
+	freeCtrls  int
+}
+
+func (a *countingAllocator[K, V]) AllocSlots(n int) []Slot[K, V] {
+	a.allocSlots++
+	return make([]Slot[K, V], n)
+}
+
+func (a *countingAllocator[K, V]) AllocControls(n int) []uint8 {
+	a.allocCtrls++
+	return make([]uint8, n)
+}
+
+func (a *countingAllocator[K, V]) FreeSlots(_ []Slot[K, V]) {
+	a.freeSlots++
+}
+
+func (a *countingAllocator[K, V]) FreeControls(_ []uint8) {
+	a.freeCtrls++
+}
+
+func TestAllocator(t *testing.T) {
+	a := &countingAllocator[int, int]{}
+	m := New[int, int](0, WithAllocator[int, int](a))
+
+	for i := 0; i < 100; i++ {
+		m.Put(i, i)
+	}
+
+	// 8 -> 16 -> 32 -> 64 -> 128
+	const expected = 5
+	require.EqualValues(t, expected, a.allocSlots)
+	require.EqualValues(t, expected, a.allocCtrls)
+	require.EqualValues(t, expected-1, a.freeSlots)
+	require.EqualValues(t, expected-1, a.freeCtrls)
+
+	m.Close()
+
+	require.EqualValues(t, expected, a.freeSlots)
+	require.EqualValues(t, expected, a.freeCtrls)
 }
 
 func BenchmarkStringMap(b *testing.B) {
