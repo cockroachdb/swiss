@@ -152,7 +152,7 @@ func TestMatchEmptyOrDeleted(t *testing.T) {
 	}
 }
 
-func TestConvertDeletedToEmptyAndFullToDeleted(t *testing.T) {
+func TestConvertNonFullToEmptyAndFullToDeleted(t *testing.T) {
 	ctrls := make([]ctrl, groupSize)
 	expected := make([]ctrl, groupSize)
 	for i := 0; i < 100; i++ {
@@ -165,7 +165,7 @@ func TestConvertDeletedToEmptyAndFullToDeleted(t *testing.T) {
 				ctrls[j] = ctrlDeleted
 				expected[j] = ctrlEmpty
 			case 2: // 25% sentinel
-				ctrls[j] = ctrlDeleted
+				ctrls[j] = ctrlSentinel
 				expected[j] = ctrlEmpty
 			default: // 25% full
 				ctrls[j] = ctrl(rand.Intn(127))
@@ -173,7 +173,7 @@ func TestConvertDeletedToEmptyAndFullToDeleted(t *testing.T) {
 			}
 		}
 
-		ctrls[0].convertDeletedToEmptyAndFullToDeleted()
+		ctrls[0].convertNonFullToEmptyAndFullToDeleted()
 		require.EqualValues(t, expected, ctrls)
 	}
 }
