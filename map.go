@@ -1,3 +1,17 @@
+// Copyright 2024 The Cockroach Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // package swiss is a Go implementation of Swiss Tables as described in
 // https://abseil.io/about/design/swisstables. See also:
 // https://faultlore.com/blah/hashbrown-tldr/.
@@ -189,6 +203,7 @@ func New[K comparable, V any](initialCapacity int, options ...option[K, V]) *Map
 		targetCapacity := (uintptr(1) << bits.Len(uint(initialCapacity))) - 1
 		m.resize(targetCapacity)
 	}
+	m.checkInvariants()
 	return m
 }
 
@@ -246,6 +261,7 @@ func (m *Map[K, V]) Put(key K, value V) {
 					fmt.Printf("put(updating): index=%d  key=%v\n", i, key)
 				}
 				slot.value = value
+				m.checkInvariants()
 				return
 			}
 			match = match.clear(bit)
@@ -259,6 +275,7 @@ func (m *Map[K, V]) Put(key K, value V) {
 			}
 			m.uncheckedPut(h, key, value)
 			m.used++
+			m.checkInvariants()
 			return
 		}
 
@@ -406,6 +423,7 @@ func (m *Map[K, V]) Delete(key K) {
 						fmt.Printf("delete(%v): index=%d used=%d\n", key, i, m.used)
 					}
 				}
+				m.checkInvariants()
 				return
 			}
 			match = match.clear(bit)
@@ -417,6 +435,7 @@ func (m *Map[K, V]) Delete(key K) {
 				fmt.Printf("delete(not-found): offset=%d match-empty=%s [% 02x]\n",
 					seq.offset, match, m.ctrls.Slice(seq.offset, seq.offset+groupSize))
 			}
+			m.checkInvariants()
 			return
 		}
 
@@ -568,8 +587,10 @@ func (m *Map[K, V]) uncheckedPut(h uintptr, key K, value V) {
 			slot := m.slots.At(i)
 			slot.key = key
 			slot.value = value
+			if *m.ctrls.At(i) == ctrlEmpty {
+				m.growthLeft--
+			}
 			m.setCtrl(i, ctrl(h2(h)))
-			m.growthLeft--
 			if debug {
 				fmt.Printf("put(inserting): index=%d used=%d growth-left=%d\n", i, m.used+1, m.growthLeft)
 			}
@@ -650,6 +671,8 @@ func (m *Map[K, V]) resize(newCapacity uintptr) {
 		m.allocator.FreeSlots(oldSlots.Slice(0, oldCapacity))
 		m.allocator.FreeControls(unsafeConvertSlice[uint8](oldCtrls.Slice(0, oldCapacity+groupSize)))
 	}
+
+	m.checkInvariants()
 }
 
 func (m *Map[K, V]) rehashInPlace() {
@@ -764,7 +787,7 @@ func (m *Map[K, V]) rehashInPlace() {
 	m.growthLeft = int((m.capacity*maxAvgGroupLoad)/groupSize) - m.used
 
 	if debug {
-		fmt.Printf("rehash: done\n")
+		fmt.Printf("rehash: done: used=%d growth-left=%d\n", m.used, m.growthLeft)
 		for i := uintptr(0); i < m.capacity; i++ {
 			switch *m.ctrls.At(i) {
 			case ctrlEmpty:
@@ -779,19 +802,89 @@ func (m *Map[K, V]) rehashInPlace() {
 				fmt.Printf("  %d: %02x/%02x %v\n", i, *m.ctrls.At(i), h2(h), s.key)
 			}
 		}
+	}
 
-		for i := uintptr(0); i < m.capacity; i++ {
-			if (*m.ctrls.At(i) & ctrlEmpty) != ctrlEmpty {
-				s := m.slots.At(i)
-				_, ok := m.Get(s.key)
-				if !ok {
-					h := m.hash(noescape(unsafe.Pointer(&s.key)), m.seed)
-					fmt.Printf("%d: %02x %v not found\n", i, h2(h), s.key)
-					panic("not reached")
+	m.checkInvariants()
+}
+
+func (m *Map[K, V]) checkInvariants() {
+	if invariants {
+		if m.capacity > 0 {
+			// Verify the cloned control bytes are good.
+			for i, n := uintptr(0), uintptr(groupSize-1); i < n; i++ {
+				j := ((i - (groupSize - 1)) & m.capacity) + (groupSize - 1)
+				ci := *m.ctrls.At(i)
+				cj := *m.ctrls.At(j)
+				if ci != cj {
+					panic(fmt.Sprintf("invariant failed: ctrl(%d)=%02x != ctrl(%d)=%02x\n%s", i, ci, j, cj, m.DebugString()))
 				}
+			}
+			// Verify the sentinel is good.
+			if c := *m.ctrls.At(m.capacity); c != ctrlSentinel {
+				panic(fmt.Sprintf("invariant failed: ctrl(%d): expected sentinel, but found %02x\n%s", m.capacity, c, m.DebugString()))
+			}
+		}
+
+		// For every non-empty slot, verify we can retrieve the key using Get.
+		// Count the number of used and deleted slots.
+		var used int
+		var deleted int
+		var empty int
+		for i := uintptr(0); i < m.capacity; i++ {
+			c := *m.ctrls.At(i)
+			switch {
+			case c == ctrlDeleted:
+				deleted++
+			case c == ctrlEmpty:
+				empty++
+			case c == ctrlSentinel:
+				panic(fmt.Sprintf("invariant failed: ctrl(%d): unexpected sentinel", i))
+			default:
+				s := m.slots.At(i)
+				if _, ok := m.Get(s.key); !ok {
+					h := m.hash(noescape(unsafe.Pointer(&s.key)), m.seed)
+					panic(fmt.Sprintf("invariant failed: slot(%d): %v not found [h2=%02x h1=%07x]\n%s",
+						i, s.key, h2(h), h1(h), m.DebugString()))
+				}
+				used++
+			}
+		}
+
+		if used != m.used {
+			panic(fmt.Sprintf("invariant failed: found %d used slots, but used count is %d\n%s",
+				used, m.used, m.DebugString()))
+		}
+
+		growthLeft := int((m.capacity*maxAvgGroupLoad)/groupSize-uintptr(m.used)) - deleted
+		if growthLeft != m.growthLeft {
+			panic(fmt.Sprintf("invariant failed: found %d growthLeft, but expected %d\n%s",
+				m.growthLeft, growthLeft, m.DebugString()))
+		}
+	}
+}
+
+func (m *Map[K, V]) DebugString() string {
+	var buf strings.Builder
+	fmt.Fprintf(&buf, "capacity=%d  used=%d  growth-left=%d\n", m.capacity, m.used, m.growthLeft)
+	for i := uintptr(0); i < m.capacity+groupSize; i++ {
+		switch c := *m.ctrls.At(i); c {
+		case ctrlEmpty:
+			fmt.Fprintf(&buf, "  %4d: empty\n", i)
+		case ctrlDeleted:
+			fmt.Fprintf(&buf, "  %4d: deleted\n", i)
+		case ctrlSentinel:
+			fmt.Fprintf(&buf, "  %4d: sentinel\n", i)
+		default:
+			if i < m.capacity {
+				s := m.slots.At(i)
+				h := m.hash(noescape(unsafe.Pointer(&s.key)), m.seed)
+				fmt.Fprintf(&buf, "  %4d: %v [ctrl=%02x h2=%02x] \n", i, s.key, c, h2(h))
+			} else {
+				fmt.Fprintf(&buf, "  %4d: [ctrl=%02x]\n", i, c)
 			}
 		}
 	}
+	return buf.String()
 }
 
 type bitset uint64
