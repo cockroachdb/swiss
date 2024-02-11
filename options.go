@@ -34,6 +34,21 @@ func WithHash[K comparable, V any](hash func(key *K, seed uintptr) uintptr) opti
 	return hashOption[K, V]{hash}
 }
 
+type maxBucketCapacityOption[K comparable, V any] struct {
+	maxBucketCapacity uintptr
+}
+
+func (op maxBucketCapacityOption[K, V]) apply(m *Map[K, V]) {
+	m.maxBucketCapacity = op.maxBucketCapacity
+}
+
+// WithMaxBucketCapacity is an option to specify the max bucket size to use
+// for a Map[K,V]. Specifying a very large bucket size results in slower
+// resize operations but delivers performance more akin to a raw Swiss table.
+func WithMaxBucketCapacity[K comparable, V any](v uintptr) option[K, V] {
+	return maxBucketCapacityOption[K, V]{v}
+}
+
 // Allocator specifies an interface for allocating and releasing memory used
 // by a Map. The default allocator utilizes Go's builtin make() and allows the
 // GC to reclaim memory.
