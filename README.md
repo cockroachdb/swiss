@@ -8,8 +8,8 @@ implementation in the Rust standard library.
 A `swiss.Map[K,V]` maps keys of type `K` to values of type `V`, similar to
 Go's builtin `map[K]V` type. The primary advantage of `swiss.Map` over Go's
 builtin map is performance. `swiss.Map` has similar or slightly better
-performance Go's builtin map for small map sizes, and significantly better
-performance at large map sizes.
+performance than Go's builtin map for small map sizes, and significantly
+better performance at large map sizes.
 
 ```
 name                                         old time/op  new time/op  delta
@@ -60,5 +60,3 @@ Int64Map/avgLoad,n=86015/Map/PutDelete-10    50.8ns ± 0%  21.0ns ± 1%  -58.65%
     Abseil implementation is leveraring gcc/llvm assembly intrinsics which are
     not currently available in Go. In order to take advantage of SIMD we'll
     have to write most/all of the probing loop in assembly.
-- Explore extendible hashing to allow incremental resizing. See
-  https://github.com/golang/go/issues/54766#issuecomment-1233125048

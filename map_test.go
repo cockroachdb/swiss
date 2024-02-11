@@ -36,14 +36,18 @@ func (m *Map[K, V]) toBuiltinMap() map[K]V {
 }
 
 // TODO(peter): Extracting a random element might be generally useful. Should
-// this be promoted to the public API?
+// this be promoted to the public API? Note that the elements are not selected
+// uniformly randomly. If we promote this method to the public API it should
+// take a rand.Rand.
 func (m *Map[K, V]) randElement() (key K, value V, ok bool) {
-	if m.capacity > 0 {
-		offset := uintptr(rand.Intn(int(m.capacity)))
-		for i := uintptr(0); i <= m.capacity; i++ {
-			j := (i + offset) & m.capacity
-			if (*m.ctrls.At(j) & ctrlEmpty) != ctrlEmpty {
-				s := m.slots.At(j)
+	// TODO(peter): fixme
+	t := &m.bucket0
+	if t.capacity > 0 {
+		offset := uintptr(rand.Intn(int(t.capacity)))
+		for i := uintptr(0); i <= t.capacity; i++ {
+			j := (i + offset) & t.capacity
+			if (*t.ctrls.At(j) & ctrlEmpty) != ctrlEmpty {
+				s := t.slots.At(j)
 				return s.key, s.value, true
 			}
 		}
@@ -179,7 +183,7 @@ func TestConvertNonFullToEmptyAndFullToDeleted(t *testing.T) {
 }
 
 func TestWasNeverFull(t *testing.T) {
-	m := &Map[int, int]{
+	b := &bucket[int, int]{
 		capacity: 15,
 		ctrls:    makeUnsafeSlice(make([]ctrl, 16)),
 	}
@@ -211,12 +215,12 @@ func TestWasNeverFull(t *testing.T) {
 	for _, c := range testCases {
 		t.Run("", func(t *testing.T) {
 			for i := uintptr(0); i < 16; i++ {
-				*m.ctrls.At(i) = 0
+				*b.ctrls.At(i) = 0
 			}
 			for _, i := range c.emptyIndexes {
-				*m.ctrls.At(i) = ctrlEmpty
+				*b.ctrls.At(i) = ctrlEmpty
 			}
-			require.Equal(t, c.expected, m.wasNeverFull(0))
+			require.Equal(t, c.expected, b.wasNeverFull(0))
 		})
 	}
 }
@@ -236,7 +240,7 @@ func TestInitialCapacity(t *testing.T) {
 	for _, c := range testCases {
 		t.Run("", func(t *testing.T) {
 			m := New[int, int](c.initialCapacity)
-			require.EqualValues(t, c.expectedCapacity, m.capacity)
+			require.EqualValues(t, c.expectedCapacity, m.capacity())
 		})
 	}
 }
@@ -251,7 +255,7 @@ func TestBasic(t *testing.T) {
 		t.Run("", func(t *testing.T) {
 			e := make(map[int]int)
 			require.EqualValues(t, 0, m.Len())
-			require.EqualValues(t, 0, m.growthLeft)
+			require.EqualValues(t, 0, m.bucket0.growthLeft)
 
 			// Non-existent.
 			for i := 0; i < 10; i++ {
@@ -343,7 +347,7 @@ func TestRandom(t *testing.T) {
 						require.EqualValues(t, e[k], v)
 					}
 				default: // 5% rehash in place and iterate
-					m.rehashInPlace()
+					m.bucket0.rehashInPlace(m)
 					require.Equal(t, e, m.toBuiltinMap())
 				}
 				require.EqualValues(t, len(e), m.Len())
@@ -367,7 +371,7 @@ func TestIterateMutate(t *testing.T) {
 	vals := make(map[int]int)
 	m.All(func(k, v int) bool {
 		if (k % 10) == 0 {
-			m.resize(2*m.capacity + 1)
+			m.bucket0.resize(m, 2*m.bucket0.capacity+1)
 		}
 		vals[k] = v
 		return true
@@ -565,7 +569,7 @@ func benchmarkSwissMap[K comparable](b *testing.B, keys []K) {
 		b.StopTimer()
 
 		assert.True(b, ok)
-		b.ReportMetric(float64(m.Len())/float64(m.capacity), "load-factor")
+		b.ReportMetric(float64(m.Len())/float64(m.capacity()), "load-factor")
 	})
 
 	// Rather than benchmark puts and deletes separately, we benchmark them
@@ -584,6 +588,6 @@ func benchmarkSwissMap[K comparable](b *testing.B, keys []K) {
 		}
 		b.StopTimer()
 
-		b.ReportMetric(float64(m.Len())/float64(m.capacity), "load-factor")
+		b.ReportMetric(float64(m.Len())/float64(m.capacity()), "load-factor")
 	})
 }
