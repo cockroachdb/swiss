@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// package swiss is a Go implementation of Swiss Tables as described in
+// Package swiss is a Go implementation of Swiss Tables as described in
 // https://abseil.io/about/design/swisstables. See also:
 // https://faultlore.com/blah/hashbrown-tldr/.
 //
@@ -250,8 +250,8 @@ func (m *Map[K, V]) Put(key K, value V) {
 		}
 
 		for match != 0 {
-			bit := match.next()
-			i := seq.offsetAt(bit)
+			slotIdx := match.first()
+			i := seq.offsetAt(slotIdx)
 			if debug {
 				fmt.Printf("put(checking): index=%d  key=%v\n", i, m.slots.At(i).key)
 			}
@@ -264,7 +264,7 @@ func (m *Map[K, V]) Put(key K, value V) {
 				m.checkInvariants()
 				return
 			}
-			match = match.clear(bit)
+			match = match.remove(slotIdx)
 		}
 
 		match = g.matchEmpty()
@@ -335,8 +335,8 @@ func (m *Map[K, V]) Get(key K) (value V, ok bool) {
 		}
 
 		for match != 0 {
-			bit := match.next()
-			i := seq.offsetAt(bit)
+			slotIdx := match.first()
+			i := seq.offsetAt(slotIdx)
 			if debug {
 				fmt.Printf("get(checking): index=%d  key=%v\n", i, m.slots.At(i).key)
 			}
@@ -344,7 +344,7 @@ func (m *Map[K, V]) Get(key K) (value V, ok bool) {
 			if key == slot.key {
 				return slot.value, true
 			}
-			match = match.clear(bit)
+			match = match.remove(slotIdx)
 		}
 
 		match = g.matchEmpty()
@@ -387,8 +387,8 @@ func (m *Map[K, V]) Delete(key K) {
 		}
 
 		for match != 0 {
-			bit := match.next()
-			i := seq.offsetAt(bit)
+			slotIdx := match.first()
+			i := seq.offsetAt(slotIdx)
 			if debug {
 				fmt.Printf("delete(checking): index=%d  key=%v\n", i, m.slots.At(i).key)
 			}
@@ -426,7 +426,7 @@ func (m *Map[K, V]) Delete(key K) {
 				m.checkInvariants()
 				return
 			}
-			match = match.clear(bit)
+			match = match.remove(slotIdx)
 		}
 
 		match = g.matchEmpty()
@@ -510,8 +510,8 @@ func (m *Map[K, V]) wasNeverFull(i uintptr) bool {
 	emptyBefore := m.ctrls.At(indexBefore).matchEmpty()
 	if debug {
 		fmt.Printf("wasNeverFull: before=%d/%s/%d after=%d/%s/%d\n",
-			indexBefore, emptyBefore, bits.LeadingZeros64(uint64(emptyBefore))>>3,
-			i, emptyAfter, bits.TrailingZeros64(uint64(emptyAfter))>>3)
+			indexBefore, emptyBefore, emptyBefore.absentAtEnd(),
+			i, emptyAfter, emptyAfter.absentAtStart())
 	}
 
 	// We count how many consecutive non empties we have to the right and to
@@ -547,8 +547,7 @@ func (m *Map[K, V]) wasNeverFull(i uintptr) bool {
 	// right of i as 4. Sum these two results together and we see there was a
 	// full group overlapping i.
 	if emptyBefore != 0 && emptyAfter != 0 &&
-		((bits.TrailingZeros64(uint64(emptyAfter))>>3)+
-			(bits.LeadingZeros64(uint64(emptyBefore))>>3)) < groupSize {
+		emptyBefore.absentAtEnd()+emptyAfter.absentAtStart() < groupSize {
 		return true
 	}
 	return false
@@ -583,7 +582,7 @@ func (m *Map[K, V]) uncheckedPut(h uintptr, key K, value V) {
 		}
 
 		if match != 0 {
-			i := seq.offsetAt(match.next())
+			i := seq.offsetAt(match.first())
 			slot := m.slots.At(i)
 			slot.key = key
 			slot.value = value
@@ -734,7 +733,7 @@ func (m *Map[K, V]) rehashInPlace() {
 		for ; ; seq = seq.next() {
 			g := m.ctrls.At(seq.offset)
 			if match := g.matchEmptyOrDeleted(); match != 0 {
-				target = seq.offsetAt(match.next())
+				target = seq.offsetAt(match.first())
 				break
 			}
 		}
@@ -887,13 +886,34 @@ func (m *Map[K, V]) DebugString() string {
 	return buf.String()
 }
 
+// bitset represents a set of slots within a group.
+//
+// The underlying representation uses one byte per slot, where each byte is
+// either 0x80 if the slot is part of the set or 0x00 otherwise. This makes it
+// convenient to calculate for an entire group at once (e.g. see matchEmpty).
 type bitset uint64
 
-func (b bitset) next() uintptr {
+// first returns the relative index of the first slot in the set.
+//
+// Returns groupSize if the bitset is empty.
+func (b bitset) first() uintptr {
 	return uintptr(bits.TrailingZeros64(uint64(b))) >> 3
 }
 
-func (b bitset) clear(i uintptr) bitset {
+// Returns the maximal number of contiguous slots at the beginning of the group
+// that are NOT in the set.
+func (b bitset) absentAtStart() uintptr {
+	return b.first()
+}
+
+// Returns the maximal number of contiguous slots at the end of the group that
+// are NOT in the set.
+func (b bitset) absentAtEnd() uintptr {
+	return uintptr(bits.LeadingZeros64(uint64(b))) >> 3
+}
+
+// remove removes the slot with the given relative index.
+func (b bitset) remove(i uintptr) bitset {
 	return b &^ (bitset(0x80) << (i << 3))
 }
 
@@ -928,6 +948,8 @@ var emptyCtrls = func() unsafeSlice[ctrl] {
 	return makeUnsafeSlice(v)
 }()
 
+// matchH2 returns the set of slots which are full and for which the 7-bit hash
+// matches the given value. May return false positives.
 func (c *ctrl) matchH2(h uintptr) bitset {
 	// NB: This generic matching routine produces false positive matches when
 	// h is 2^N and the control bytes have a seq of 2^N followed by 2^N+1. For
@@ -941,24 +963,27 @@ func (c *ctrl) matchH2(h uintptr) bitset {
 	return bitset(((v - bitsetLSB) &^ v) & bitsetMSB)
 }
 
-// matchEmpty returns a bitset where each byte is 0x80 if that control byte
-// indicates an empty slot (and 0x00 otherwise).
+// matchEmpty returns the set of slots in the group that are empty.
 func (c *ctrl) matchEmpty() bitset {
 	v := *(*uint64)((unsafe.Pointer)(c))
 	// An empty slot is              1000 0000
 	// A deleted or sentinel slot is 1111 111?
+	// A full slot is                0??? ????
+	//
 	// A slot is empty iff bit 7 is set and bit 1 is not.
 	// We could select any of the other bits here (e.g. v << 1 would also
 	// work).
 	return bitset((v &^ (v << 6)) & bitsetMSB)
 }
 
-// matchEmpty returns a bitset where each byte is 0x80 if that control byte
-// indicates an empty or deleted slot (and 0x00 otherwise).
+// matchEmptyOrDeleted returns the set of slots in the group that are empty or
+// deleted.
 func (c *ctrl) matchEmptyOrDeleted() bitset {
 	// An empty slot is  1000 0000.
 	// A deleted slot is 1111 1110.
 	// The sentinel is   1111 1111.
+	// A full slot is    0??? ????
+	//
 	// A slot is empty or deleted iff bit 7 is set and bit 0 is not.
 	v := *(*uint64)((unsafe.Pointer)(c))
 	return bitset((v &^ (v << 7)) & bitsetMSB)
