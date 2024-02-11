@@ -953,8 +953,8 @@ func (c *ctrl) matchEmpty() bitset {
 	return bitset((v &^ (v << 6)) & bitsetMSB)
 }
 
-// matchEmpty returns a bitset where each byte is 0x80 if that control byte
-// indicates an empty or deleted slot (and 0x00 otherwise).
+// matchEmptyOrDeleted returns a bitset where each byte is 0x80 if that control
+// byte indicates an empty or deleted slot (and 0x00 otherwise).
 func (c *ctrl) matchEmptyOrDeleted() bitset {
 	// An empty slot is  1000 0000.
 	// A deleted slot is 1111 1110.
