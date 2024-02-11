@@ -700,7 +700,7 @@ func (m *Map[K, V]) rehashInPlace() {
 
 	// Mark all DELETED slots as EMPTY and all FULL slots as DELETED.
 	for i := uintptr(0); i < m.capacity; i += groupSize {
-		m.ctrls.At(i).convertDeletedToEmptyAndFullToDeleted()
+		m.ctrls.At(i).convertNonFullToEmptyAndFullToDeleted()
 	}
 
 	// Fixup the cloned control bytes and the sentinel.
@@ -941,17 +941,53 @@ func (c *ctrl) matchH2(h uintptr) bitset {
 	return bitset(((v - bitsetLSB) &^ v) & bitsetMSB)
 }
 
+// matchEmpty returns a bitset where each byte is 0x80 if that control byte
+// indicates an empty slot (and 0x00 otherwise).
 func (c *ctrl) matchEmpty() bitset {
 	v := *(*uint64)((unsafe.Pointer)(c))
+	// An empty slot is              1000 0000
+	// A deleted or sentinel slot is 1111 111?
+	// A slot is empty iff bit 7 is set and bit 1 is not.
+	// We could select any of the other bits here (e.g. v << 1 would also
+	// work).
 	return bitset((v &^ (v << 6)) & bitsetMSB)
 }
 
+// matchEmpty returns a bitset where each byte is 0x80 if that control byte
+// indicates an empty or deleted slot (and 0x00 otherwise).
 func (c *ctrl) matchEmptyOrDeleted() bitset {
+	// An empty slot is  1000 0000.
+	// A deleted slot is 1111 1110.
+	// The sentinel is   1111 1111.
+	// A slot is empty or deleted iff bit 7 is set and bit 0 is not.
 	v := *(*uint64)((unsafe.Pointer)(c))
 	return bitset((v &^ (v << 7)) & bitsetMSB)
 }
 
-func (c *ctrl) convertDeletedToEmptyAndFullToDeleted() {
+// convertNonFullToEmptyAndFullToDeleted converts deleted or sentinel control
+// bytes in a group to empty control bytes, and control bytes indicating full
+// slots to deleted control bytes.
+func (c *ctrl) convertNonFullToEmptyAndFullToDeleted() {
+	// An empty slot is     1000 0000
+	// A deleted slot is    1111 1110
+	// The sentinel slot is 1111 1111
+	// A full slot is       0??? ????
+	//
+	// We select the MSB, invert, add 1 if the MSB was set and zero out the low
+	// bit.
+	//
+	//  - if the MSB was set (i.e. slot was empty, deleted, or sentinel):
+	//     v:             1000 0000
+	//     ^v:            0111 1111
+	//     ^v + (v >> 7): 1000 0000
+	//     &^ bitsetLSB:  1000 0000  = empty slot.
+	//
+	// - if the MSB was not set (i.e. full slot):
+	//     v:             0000 0000
+	//     ^v:            1111 1111
+	//     ^v + (v >> 7): 1111 1111
+	//     &^ bitsetLSB:  1111 1110 = deleted slot.
+	//
 	p := (*uint64)((unsafe.Pointer)(c))
 	v := *p & bitsetMSB
 	*p = (^v + (v >> 7)) &^ bitsetLSB
