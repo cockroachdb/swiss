@@ -798,12 +798,12 @@ func (m *Map[K, V]) checkInvariants() {
 				ci := *m.ctrls.At(i)
 				cj := *m.ctrls.At(j)
 				if ci != cj {
-					panic(fmt.Sprintf("invariant failed: ctrl(%d)=%02x != ctrl(%d)=%02x\n%s", i, ci, j, cj, m.DebugString()))
+					panic(fmt.Sprintf("invariant failed: ctrl(%d)=%02x != ctrl(%d)=%02x\n%#v", i, ci, j, cj, m))
 				}
 			}
 			// Verify the sentinel is good.
 			if c := *m.ctrls.At(m.capacity); c != ctrlSentinel {
-				panic(fmt.Sprintf("invariant failed: ctrl(%d): expected sentinel, but found %02x\n%s", m.capacity, c, m.DebugString()))
+				panic(fmt.Sprintf("invariant failed: ctrl(%d): expected sentinel, but found %02x\n%#v", m.capacity, c, m))
 			}
 		}
 
@@ -825,45 +825,42 @@ func (m *Map[K, V]) checkInvariants() {
 				s := m.slots.At(i)
 				if _, ok := m.Get(s.key); !ok {
 					h := m.hash(noescape(unsafe.Pointer(&s.key)), m.seed)
-					panic(fmt.Sprintf("invariant failed: slot(%d): %v not found [h2=%02x h1=%07x]\n%s",
-						i, s.key, h2(h), h1(h), m.DebugString()))
+					panic(fmt.Sprintf("invariant failed: slot(%d): %v not found [h2=%02x h1=%07x]\n%#v",
+						i, s.key, h2(h), h1(h), m))
 				}
 				used++
 			}
 		}
 
 		if used != m.used {
-			panic(fmt.Sprintf("invariant failed: found %d used slots, but used count is %d\n%s",
-				used, m.used, m.DebugString()))
+			panic(fmt.Sprintf("invariant failed: found %d used slots, but used count is %d\n%#v",
+				used, m.used, m))
 		}
 
 		growthLeft := int((m.capacity*maxAvgGroupLoad)/groupSize-uintptr(m.used)) - deleted
 		if growthLeft != m.growthLeft {
-			panic(fmt.Sprintf("invariant failed: found %d growthLeft, but expected %d\n%s",
-				m.growthLeft, growthLeft, m.DebugString()))
+			panic(fmt.Sprintf("invariant failed: found %d growthLeft, but expected %d\n%#v",
+				m.growthLeft, growthLeft, m))
 		}
 	}
 }
 
-func (m *Map[K, V]) DebugString() string {
+// GoString implements the fmt.GoStringer interface which is used when
+// formatting using the "%#v" format specifier.
+func (m *Map[K, V]) GoString() string {
 	var buf strings.Builder
 	fmt.Fprintf(&buf, "capacity=%d  used=%d  growth-left=%d\n", m.capacity, m.used, m.growthLeft)
 	for i := uintptr(0); i < m.capacity+groupSize; i++ {
 		switch c := *m.ctrls.At(i); c {
 		case ctrlEmpty:
-			fmt.Fprintf(&buf, "  %4d: empty\n", i)
+			fmt.Fprintf(&buf, "  %4d: %02x [empty]\n", i, c)
 		case ctrlDeleted:
-			fmt.Fprintf(&buf, "  %4d: deleted\n", i)
+			fmt.Fprintf(&buf, "  %4d: %02x [deleted]\n", i, c)
 		case ctrlSentinel:
-			fmt.Fprintf(&buf, "  %4d: sentinel\n", i)
+			fmt.Fprintf(&buf, "  %4d: %02x [sentinel]\n", i, c)
 		default:
-			if i < m.capacity {
-				s := m.slots.At(i)
-				h := m.hash(noescape(unsafe.Pointer(&s.key)), m.seed)
-				fmt.Fprintf(&buf, "  %4d: %v [ctrl=%02x h2=%02x] \n", i, s.key, c, h2(h))
-			} else {
-				fmt.Fprintf(&buf, "  %4d: [ctrl=%02x]\n", i, c)
-			}
+			s := m.slots.At(i & m.capacity)
+			fmt.Fprintf(&buf, "  %4d: %02x [%v:%v]\n", i, c, s.key, s.value)
 		}
 	}
 	return buf.String()
