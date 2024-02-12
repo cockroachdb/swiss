@@ -1,4 +1,4 @@
-# Swiss Map [![Build Status](https://github.com/cockroachdb/swiss/actions/workflows/ci.yaml/badge.svg?branch=master)](https://github.com/cockroachdb/swiss/actions/workflows/ci.yaml) [![GoDoc](https://godoc.org/github.com/cockroachdb/swiss?status.svg)](https://godoc.org/github.com/cockroachdb/swiss)
+# Swiss Map [![Build Status](https://github.com/cockroachdb/swiss/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/cockroachdb/swiss/actions/workflows/ci.yaml) [![GoDoc](https://godoc.org/github.com/cockroachdb/swiss?status.svg)](https://godoc.org/github.com/cockroachdb/swiss)
 
 `swiss.Map` is a Go implementation of [Google's Swiss Tables hash table
 design](https://abseil.io/about/design/swisstables). The [Rust version of
