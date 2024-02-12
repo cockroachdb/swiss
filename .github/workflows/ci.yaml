@@ -12,7 +12,7 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - darwin-latest
+          - macos-latest
         go:
           - '1.20'
           - '1.21'
