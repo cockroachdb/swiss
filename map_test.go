@@ -102,7 +102,7 @@ func TestMatchH2(t *testing.T) {
 	ctrls := []ctrl{0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8}
 	for i := uintptr(1); i <= 8; i++ {
 		match := ctrls[0].matchH2(i)
-		bit := match.next()
+		bit := match.first()
 		require.EqualValues(t, i-1, bit)
 	}
 }
@@ -121,9 +121,9 @@ func TestMatchEmpty(t *testing.T) {
 			match := c.ctrls[0].matchEmpty()
 			var results []uintptr
 			for match != 0 {
-				bit := match.next()
-				results = append(results, bit)
-				match = match.clear(bit)
+				idx := match.first()
+				results = append(results, idx)
+				match = match.remove(idx)
 			}
 			require.Equal(t, c.expected, results)
 		})
@@ -143,9 +143,9 @@ func TestMatchEmptyOrDeleted(t *testing.T) {
 			match := c.ctrls[0].matchEmptyOrDeleted()
 			var results []uintptr
 			for match != 0 {
-				bit := match.next()
-				results = append(results, bit)
-				match = match.clear(bit)
+				idx := match.first()
+				results = append(results, idx)
+				match = match.remove(idx)
 			}
 			require.Equal(t, c.expected, results)
 		})
@@ -176,6 +176,39 @@ func TestConvertNonFullToEmptyAndFullToDeleted(t *testing.T) {
 		ctrls[0].convertNonFullToEmptyAndFullToDeleted()
 		require.EqualValues(t, expected, ctrls)
 	}
+}
+
+func TestAbsentAt(t *testing.T) {
+	testCases := []struct {
+		set   string
+		start uintptr
+		end   uintptr
+	}{
+		{set: "01001100", start: 1, end: 2},
+		{set: "11001000", start: 0, end: 3},
+		{set: "00001001", start: 4, end: 0},
+		{set: "10001001", start: 0, end: 0},
+		{set: "00000000", start: 8, end: 8},
+	}
+	for _, c := range testCases {
+		t.Run("", func(t *testing.T) {
+			b := bitsetFromString(t, c.set)
+			require.Equal(t, c.start, b.absentAtStart())
+			require.Equal(t, c.end, b.absentAtEnd())
+		})
+	}
+}
+
+func bitsetFromString(t *testing.T, str string) bitset {
+	require.Equal(t, 8, len(str))
+	var b bitset
+	for i := 0; i < 8; i++ {
+		require.True(t, str[i] == '0' || str[i] == '1')
+		if str[i] == '1' {
+			b |= 0x80 << (i * 8)
+		}
+	}
+	return b
 }
 
 func TestWasNeverFull(t *testing.T) {
