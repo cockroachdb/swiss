@@ -16,6 +16,7 @@ package swiss
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"sort"
 	"testing"
@@ -40,19 +41,13 @@ func (m *Map[K, V]) toBuiltinMap() map[K]V {
 // uniformly randomly. If we promote this method to the public API it should
 // take a rand.Rand.
 func (m *Map[K, V]) randElement() (key K, value V, ok bool) {
-	// TODO(peter): fixme
-	t := &m.bucket0
-	if t.capacity > 0 {
-		offset := uintptr(rand.Intn(int(t.capacity)))
-		for i := uintptr(0); i <= t.capacity; i++ {
-			j := (i + offset) & t.capacity
-			if (*t.ctrls.At(j) & ctrlEmpty) != ctrlEmpty {
-				s := t.slots.At(j)
-				return s.key, s.value, true
-			}
-		}
-	}
-	return key, value, false
+	// Rely on random iteration order to give us a random element.
+	m.All(func(k K, v V) bool {
+		key, value = k, v
+		ok = true
+		return false
+	})
+	return
 }
 
 func TestLittleEndian(t *testing.T) {
@@ -279,114 +274,150 @@ func TestInitialCapacity(t *testing.T) {
 }
 
 func TestBasic(t *testing.T) {
-	goodHash := New[int, int](0)
-	badHash := New[int, int](0, WithHash[int, int](func(key *int, seed uintptr) uintptr {
-		return 0
-	}))
+	test := func(t *testing.T, m *Map[int, int]) {
+		const count = 100
 
-	for _, m := range []*Map[int, int]{goodHash, badHash} {
-		t.Run("", func(t *testing.T) {
-			e := make(map[int]int)
-			require.EqualValues(t, 0, m.Len())
-			require.EqualValues(t, 0, m.bucket0.growthLeft)
+		e := make(map[int]int)
+		require.EqualValues(t, 0, m.Len())
+		require.EqualValues(t, 0, m.bucket0.growthLeft)
 
-			// Non-existent.
-			for i := 0; i < 10; i++ {
-				_, ok := m.Get(i)
-				require.False(t, ok)
-			}
+		// Non-existent.
+		for i := 0; i < count; i++ {
+			_, ok := m.Get(i)
+			require.False(t, ok)
+		}
 
-			// Insert.
-			for i := 0; i < 10; i++ {
-				m.Put(i, i+10)
-				e[i] = i + 10
-				v, ok := m.Get(i)
-				require.True(t, ok)
-				require.EqualValues(t, i+10, v)
-				require.EqualValues(t, i+1, m.Len())
-				require.Equal(t, e, m.toBuiltinMap())
-			}
+		// Insert.
+		for i := 0; i < count; i++ {
+			m.Put(i, i+count)
+			e[i] = i + count
+			v, ok := m.Get(i)
+			require.True(t, ok)
+			require.EqualValues(t, i+count, v)
+			require.EqualValues(t, i+1, m.Len())
+			require.Equal(t, e, m.toBuiltinMap())
+		}
 
-			// Update.
-			for i := 0; i < 10; i++ {
-				m.Put(i, i+20)
-				e[i] = i + 20
-				v, ok := m.Get(i)
-				require.True(t, ok)
-				require.EqualValues(t, i+20, v)
-				require.EqualValues(t, 10, m.Len())
-				require.Equal(t, e, m.toBuiltinMap())
-			}
+		// Update.
+		for i := 0; i < count; i++ {
+			m.Put(i, i+2*count)
+			e[i] = i + 2*count
+			v, ok := m.Get(i)
+			require.True(t, ok)
+			require.EqualValues(t, i+2*count, v)
+			require.EqualValues(t, count, m.Len())
+			require.Equal(t, e, m.toBuiltinMap())
+		}
 
-			// Delete.
-			for i := 0; i < 10; i++ {
-				m.Delete(i)
-				delete(e, i)
-				require.EqualValues(t, 10-i-1, m.Len())
-				_, ok := m.Get(i)
-				require.False(t, ok)
-				require.Equal(t, e, m.toBuiltinMap())
-			}
-		})
+		// Delete.
+		for i := 0; i < count; i++ {
+			m.Delete(i)
+			delete(e, i)
+			require.EqualValues(t, count-i-1, m.Len())
+			_, ok := m.Get(i)
+			require.False(t, ok)
+			require.Equal(t, e, m.toBuiltinMap())
+		}
 	}
+
+	t.Run("normal", func(t *testing.T) {
+		test(t, New[int, int](0))
+	})
+
+	t.Run("degenerate", func(t *testing.T) {
+		testDegenerate := func(t *testing.T, h uintptr) {
+			m := New[int, int](0,
+				WithHash[int, int](func(key *int, seed uintptr) uintptr {
+					return h
+				}),
+				WithMaxBucketCapacity[int, int](7))
+			test(t, m)
+		}
+
+		for _, v := range []uintptr{0, ^uintptr(0)} {
+			t.Run(fmt.Sprintf("%016x", v), func(t *testing.T) {
+				testDegenerate(t, v)
+			})
+		}
+		for i := 0; i < 10; i++ {
+			v := uintptr(rand.Uint64())
+			t.Run(fmt.Sprintf("%016x", v), func(t *testing.T) {
+				testDegenerate(t, v)
+			})
+		}
+	})
 }
 
 func TestRandom(t *testing.T) {
-	goodHash := New[int, int](0)
-	badHash := New[int, int](0, WithHash[int, int](func(key *int, seed uintptr) uintptr {
-		return 0
-	}))
-
-	for _, m := range []*Map[int, int]{goodHash, badHash} {
-		t.Run("", func(t *testing.T) {
-			e := make(map[int]int)
-			for i := 0; i < 10000; i++ {
-				switch r := rand.Float64(); {
-				case r < 0.5: // 50% inserts
-					k, v := rand.Int(), rand.Int()
+	test := func(t *testing.T, m *Map[int, int]) {
+		e := make(map[int]int)
+		for i := 0; i < 10000; i++ {
+			switch r := rand.Float64(); {
+			case r < 0.5: // 50% inserts
+				k, v := rand.Int(), rand.Int()
+				if debug {
+					fmt.Printf("insert %d: %d\n", k, v)
+				}
+				m.Put(k, v)
+				e[k] = v
+			case r < 0.65: // 15% updates
+				if k, _, ok := m.randElement(); !ok {
+					require.EqualValues(t, 0, m.Len(), e)
+				} else {
+					v := rand.Int()
 					if debug {
-						fmt.Printf("insert %d: %d\n", k, v)
+						fmt.Printf("update %d: %d\n", k, v)
 					}
 					m.Put(k, v)
 					e[k] = v
-				case r < 0.65: // 15% updates
-					if k, _, ok := m.randElement(); !ok {
-						require.EqualValues(t, 0, m.Len(), e)
-					} else {
-						v := rand.Int()
-						if debug {
-							fmt.Printf("update %d: %d\n", k, v)
-						}
-						m.Put(k, v)
-						e[k] = v
-					}
-				case r < 0.80: // 15% deletes
-					if k, _, ok := m.randElement(); !ok {
-						require.EqualValues(t, 0, m.Len(), e)
-					} else {
-						if debug {
-							fmt.Printf("delete %d\n", k)
-						}
-						m.Delete(k)
-						delete(e, k)
-					}
-				case r < 0.95: // 25% lookups
-					if k, v, ok := m.randElement(); !ok {
-						require.EqualValues(t, 0, m.Len(), e)
-					} else {
-						if debug {
-							fmt.Printf("lookup %d: %d vs %d\n", k, e[k], v)
-						}
-						require.EqualValues(t, e[k], v)
-					}
-				default: // 5% rehash in place and iterate
-					m.bucket0.rehashInPlace(m)
-					require.Equal(t, e, m.toBuiltinMap())
 				}
-				require.EqualValues(t, len(e), m.Len())
+			case r < 0.80: // 15% deletes
+				if k, _, ok := m.randElement(); !ok {
+					require.EqualValues(t, 0, m.Len(), e)
+				} else {
+					if debug {
+						fmt.Printf("delete %d\n", k)
+					}
+					m.Delete(k)
+					delete(e, k)
+				}
+			case r < 0.95: // 25% lookups
+				if k, v, ok := m.randElement(); !ok {
+					require.EqualValues(t, 0, m.Len(), e)
+				} else {
+					if debug {
+						fmt.Printf("lookup %d: %d vs %d\n", k, e[k], v)
+					}
+					require.EqualValues(t, e[k], v)
+				}
+			default: // 5% rehash in place and iterate
+				m.bucket0.rehashInPlace(m)
+				require.Equal(t, e, m.toBuiltinMap())
 			}
-		})
+			require.EqualValues(t, len(e), m.Len())
+		}
 	}
+
+	t.Run("normal", func(t *testing.T) {
+		test(t, New[int, int](0))
+	})
+
+	t.Run("degenerate", func(t *testing.T) {
+		testDegenerate := func(t *testing.T, h uintptr) {
+			m := New[int, int](0,
+				WithHash[int, int](func(key *int, seed uintptr) uintptr {
+					return h
+				}),
+				WithMaxBucketCapacity[int, int](512))
+			test(t, m)
+		}
+
+		for _, v := range []uintptr{0, ^uintptr(0)} {
+			t.Run(fmt.Sprintf("%016x", v), func(t *testing.T) {
+				testDegenerate(t, v)
+			})
+		}
+	})
 }
 
 func TestIterateMutate(t *testing.T) {
@@ -439,7 +470,8 @@ func (a *countingAllocator[K, V]) FreeControls(_ []uint8) {
 
 func TestAllocator(t *testing.T) {
 	a := &countingAllocator[int, int]{}
-	m := New[int, int](0, WithAllocator[int, int](a))
+	m := New[int, int](0, WithAllocator[int, int](a),
+		WithMaxBucketCapacity[int, int](math.MaxUint64))
 
 	for i := 0; i < 100; i++ {
 		m.Put(i, i)
@@ -589,7 +621,8 @@ func benchmarkSwissMap[K comparable](b *testing.B, keys []K) {
 	n := uint32(len(keys))
 
 	b.Run("Get", func(b *testing.B) {
-		m := New[K, K](len(keys))
+		// m := New[K, K](len(keys), WithMaxBucketCapacity[K, K](0))
+		m := New[K, K](len(keys), WithMaxBucketCapacity[K, K](math.MaxUint64))
 		for _, k := range keys {
 			m.Put(k, k)
 		}
@@ -603,6 +636,7 @@ func benchmarkSwissMap[K comparable](b *testing.B, keys []K) {
 
 		assert.True(b, ok)
 		b.ReportMetric(float64(m.Len())/float64(m.capacity()), "load-factor")
+		b.ReportMetric(float64(m.bucketCount()), "buckets")
 	})
 
 	// Rather than benchmark puts and deletes separately, we benchmark them
@@ -622,5 +656,6 @@ func benchmarkSwissMap[K comparable](b *testing.B, keys []K) {
 		b.StopTimer()
 
 		b.ReportMetric(float64(m.Len())/float64(m.capacity()), "load-factor")
+		b.ReportMetric(float64(m.bucketCount()), "buckets")
 	})
 }
