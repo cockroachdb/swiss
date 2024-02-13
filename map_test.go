@@ -101,7 +101,7 @@ func TestProbeSeq(t *testing.T) {
 func TestMatchH2(t *testing.T) {
 	ctrls := []ctrl{0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8}
 	for i := uintptr(1); i <= 8; i++ {
-		match := ctrls[0].matchH2(i)
+		match := makeCtrlBytes(ctrls).GroupAt(0).matchH2(i)
 		bit := match.first()
 		require.EqualValues(t, i-1, bit)
 	}
@@ -118,7 +118,7 @@ func TestMatchEmpty(t *testing.T) {
 	}
 	for _, c := range testCases {
 		t.Run("", func(t *testing.T) {
-			match := c.ctrls[0].matchEmpty()
+			match := makeCtrlBytes(c.ctrls).GroupAt(0).matchEmpty()
 			var results []uintptr
 			for match != 0 {
 				idx := match.first()
@@ -140,7 +140,7 @@ func TestMatchEmptyOrDeleted(t *testing.T) {
 	}
 	for _, c := range testCases {
 		t.Run("", func(t *testing.T) {
-			match := c.ctrls[0].matchEmptyOrDeleted()
+			match := makeCtrlBytes(c.ctrls).GroupAt(0).matchEmptyOrDeleted()
 			var results []uintptr
 			for match != 0 {
 				idx := match.first()
@@ -173,7 +173,7 @@ func TestConvertNonFullToEmptyAndFullToDeleted(t *testing.T) {
 			}
 		}
 
-		ctrls[0].convertNonFullToEmptyAndFullToDeleted()
+		makeCtrlBytes(ctrls).GroupAt(0).convertNonFullToEmptyAndFullToDeleted()
 		require.EqualValues(t, expected, ctrls)
 	}
 }
@@ -214,7 +214,7 @@ func bitsetFromString(t *testing.T, str string) bitset {
 func TestWasNeverFull(t *testing.T) {
 	m := &Map[int, int]{
 		capacity: 15,
-		ctrls:    makeUnsafeSlice(make([]ctrl, 16)),
+		ctrls:    makeCtrlBytes(make([]ctrl, 16)),
 	}
 
 	testCases := []struct {

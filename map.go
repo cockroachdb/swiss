@@ -155,7 +155,7 @@ type Map[K comparable, V any] struct {
 	// When the map is empty, ctrls points to emptyCtrls which will never be
 	// modified and is used to simplify the Put, Get, and Delete code which
 	// doesn't have to check for a nil ctrls.
-	ctrls unsafeSlice[ctrl]
+	ctrls ctrlBytes
 	// slots is capacity in length.
 	slots unsafeSlice[Slot[K, V]]
 	// The hash function to each keys of type K. The hash function is
@@ -218,7 +218,7 @@ func (m *Map[K, V]) Close() {
 		m.capacity = 0
 		m.used = 0
 	}
-	m.ctrls = makeUnsafeSlice([]ctrl(nil))
+	m.ctrls = makeCtrlBytes(nil)
 	m.slots = makeUnsafeSlice([]Slot[K, V](nil))
 	m.allocator = nil
 }
@@ -242,7 +242,7 @@ func (m *Map[K, V]) Put(key K, value V) {
 	}
 
 	for ; ; seq = seq.next() {
-		g := m.ctrls.At(seq.offset)
+		g := m.ctrls.GroupAt(seq.offset)
 		match := g.matchH2(h2(h))
 		if debug {
 			fmt.Printf("put(probing): offset=%d h2=%02x match=%s [% 02x]\n",
@@ -327,7 +327,7 @@ func (m *Map[K, V]) Get(key K) (value V, ok bool) {
 	}
 
 	for ; ; seq = seq.next() {
-		g := m.ctrls.At(seq.offset)
+		g := m.ctrls.GroupAt(seq.offset)
 		match := g.matchH2(h2(h))
 		if debug {
 			fmt.Printf("get(probing): offset=%d h2=%02x match=%s [% 02x]\n",
@@ -379,7 +379,7 @@ func (m *Map[K, V]) Delete(key K) {
 	}
 
 	for ; ; seq = seq.next() {
-		g := m.ctrls.At(seq.offset)
+		g := m.ctrls.GroupAt(seq.offset)
 		match := g.matchH2(h2(h))
 		if debug {
 			fmt.Printf("delete(probing): offset=%d h2=%02x match=%s [% 02x]\n",
@@ -469,7 +469,7 @@ func (m *Map[K, V]) All(yield func(key K, value V) bool) {
 
 	for i := uintptr(0); i < capacity; i++ {
 		// Match full entries which have a high-bit of zero.
-		if (*ctrls.At(i) & ctrlEmpty) != ctrlEmpty {
+		if (ctrls.Get(i) & ctrlEmpty) != ctrlEmpty {
 			s := slots.At(i)
 			if !yield(s.key, s.value) {
 				return
@@ -506,8 +506,8 @@ func (m *Map[K, V]) wasNeverFull(i uintptr) bool {
 	}
 
 	indexBefore := (i - groupSize) & m.capacity
-	emptyAfter := m.ctrls.At(i).matchEmpty()
-	emptyBefore := m.ctrls.At(indexBefore).matchEmpty()
+	emptyAfter := m.ctrls.GroupAt(i).matchEmpty()
+	emptyBefore := m.ctrls.GroupAt(indexBefore).matchEmpty()
 	if debug {
 		fmt.Printf("wasNeverFull: before=%d/%s/%d after=%d/%s/%d\n",
 			indexBefore, emptyBefore, emptyBefore.absentAtEnd(),
@@ -557,7 +557,7 @@ func (m *Map[K, V]) uncheckedPut(h uintptr, key K, value V) {
 	}
 
 	for ; ; seq = seq.next() {
-		g := m.ctrls.At(seq.offset)
+		g := m.ctrls.GroupAt(seq.offset)
 		match := g.matchEmptyOrDeleted()
 		if debug {
 			fmt.Printf("put(probing): offset=%d match-empty=%s [% 02x]\n",
@@ -569,7 +569,7 @@ func (m *Map[K, V]) uncheckedPut(h uintptr, key K, value V) {
 			slot := m.slots.At(i)
 			slot.key = key
 			slot.value = value
-			if *m.ctrls.At(i) == ctrlEmpty {
+			if m.ctrls.Get(i) == ctrlEmpty {
 				m.growthLeft--
 			}
 			m.setCtrl(i, ctrl(h2(h)))
@@ -615,7 +615,7 @@ func (m *Map[K, V]) resize(newCapacity uintptr) {
 
 	oldCtrls, oldSlots := m.ctrls, m.slots
 	m.slots = makeUnsafeSlice(m.allocator.AllocSlots(int(newCapacity)))
-	m.ctrls = makeUnsafeSlice(unsafeConvertSlice[ctrl](
+	m.ctrls = makeCtrlBytes(unsafeConvertSlice[ctrl](
 		m.allocator.AllocControls(int(newCapacity + groupSize))))
 	for i := uintptr(0); i < newCapacity+groupSize; i++ {
 		*m.ctrls.At(i) = ctrlEmpty
@@ -661,7 +661,7 @@ func (m *Map[K, V]) rehashInPlace() {
 	if debug {
 		fmt.Printf("rehash: %d/%d\n", m.used, m.capacity)
 		for i := uintptr(0); i < m.capacity; i++ {
-			switch *m.ctrls.At(i) {
+			switch m.ctrls.Get(i) {
 			case ctrlEmpty:
 				fmt.Printf("  %d: empty\n", i)
 			case ctrlDeleted:
@@ -682,7 +682,7 @@ func (m *Map[K, V]) rehashInPlace() {
 
 	// Mark all DELETED slots as EMPTY and all FULL slots as DELETED.
 	for i := uintptr(0); i < m.capacity; i += groupSize {
-		m.ctrls.At(i).convertNonFullToEmptyAndFullToDeleted()
+		m.ctrls.GroupAt(i).convertNonFullToEmptyAndFullToDeleted()
 	}
 
 	// Fixup the cloned control bytes and the sentinel.
@@ -699,7 +699,7 @@ func (m *Map[K, V]) rehashInPlace() {
 	// that is where the first group with an empty slot in its probe chain
 	// resides, but we never set a slot in [0, i) to DELETED.
 	for i := uintptr(0); i < m.capacity; i++ {
-		if *m.ctrls.At(i) != ctrlDeleted {
+		if m.ctrls.Get(i) != ctrlDeleted {
 			continue
 		}
 
@@ -714,7 +714,7 @@ func (m *Map[K, V]) rehashInPlace() {
 
 		var target uintptr
 		for ; ; seq = seq.next() {
-			g := m.ctrls.At(seq.offset)
+			g := m.ctrls.GroupAt(seq.offset)
 			if match := g.matchEmptyOrDeleted(); match != 0 {
 				target = seq.offsetAt(match.first())
 				break
@@ -732,7 +732,7 @@ func (m *Map[K, V]) rehashInPlace() {
 			continue
 		}
 
-		if *m.ctrls.At(target) == ctrlEmpty {
+		if m.ctrls.Get(target) == ctrlEmpty {
 			if debug {
 				fmt.Printf("rehash: %d -> %d replacing empty\n", i, target)
 			}
@@ -745,7 +745,7 @@ func (m *Map[K, V]) rehashInPlace() {
 			continue
 		}
 
-		if *m.ctrls.At(target) == ctrlDeleted {
+		if m.ctrls.Get(target) == ctrlDeleted {
 			if debug {
 				fmt.Printf("rehash: %d -> %d swapping\n", i, target)
 			}
@@ -763,7 +763,7 @@ func (m *Map[K, V]) rehashInPlace() {
 		}
 
 		panic(fmt.Sprintf("ctrl at position %d (%02x) should be empty or deleted",
-			target, *m.ctrls.At(target)))
+			target, m.ctrls.Get(target)))
 	}
 
 	m.growthLeft = int((m.capacity*maxAvgGroupLoad)/groupSize) - m.used
@@ -771,7 +771,7 @@ func (m *Map[K, V]) rehashInPlace() {
 	if debug {
 		fmt.Printf("rehash: done: used=%d growth-left=%d\n", m.used, m.growthLeft)
 		for i := uintptr(0); i < m.capacity; i++ {
-			switch *m.ctrls.At(i) {
+			switch m.ctrls.Get(i) {
 			case ctrlEmpty:
 				fmt.Printf("  %d: empty\n", i)
 			case ctrlDeleted:
@@ -781,7 +781,7 @@ func (m *Map[K, V]) rehashInPlace() {
 			default:
 				s := m.slots.At(i)
 				h := m.hash(noescape(unsafe.Pointer(&s.key)), m.seed)
-				fmt.Printf("  %d: %02x/%02x %v\n", i, *m.ctrls.At(i), h2(h), s.key)
+				fmt.Printf("  %d: %02x/%02x %v\n", i, m.ctrls.Get(i), h2(h), s.key)
 			}
 		}
 	}
@@ -795,14 +795,14 @@ func (m *Map[K, V]) checkInvariants() {
 			// Verify the cloned control bytes are good.
 			for i, n := uintptr(0), uintptr(groupSize-1); i < n; i++ {
 				j := ((i - (groupSize - 1)) & m.capacity) + (groupSize - 1)
-				ci := *m.ctrls.At(i)
-				cj := *m.ctrls.At(j)
+				ci := m.ctrls.Get(i)
+				cj := m.ctrls.Get(j)
 				if ci != cj {
 					panic(fmt.Sprintf("invariant failed: ctrl(%d)=%02x != ctrl(%d)=%02x\n%#v", i, ci, j, cj, m))
 				}
 			}
 			// Verify the sentinel is good.
-			if c := *m.ctrls.At(m.capacity); c != ctrlSentinel {
+			if c := m.ctrls.Get(m.capacity); c != ctrlSentinel {
 				panic(fmt.Sprintf("invariant failed: ctrl(%d): expected sentinel, but found %02x\n%#v", m.capacity, c, m))
 			}
 		}
@@ -813,7 +813,7 @@ func (m *Map[K, V]) checkInvariants() {
 		var deleted int
 		var empty int
 		for i := uintptr(0); i < m.capacity; i++ {
-			c := *m.ctrls.At(i)
+			c := m.ctrls.Get(i)
 			switch {
 			case c == ctrlDeleted:
 				deleted++
@@ -851,7 +851,7 @@ func (m *Map[K, V]) GoString() string {
 	var buf strings.Builder
 	fmt.Fprintf(&buf, "capacity=%d  used=%d  growth-left=%d\n", m.capacity, m.used, m.growthLeft)
 	for i := uintptr(0); i < m.capacity+groupSize; i++ {
-		switch c := *m.ctrls.At(i); c {
+		switch c := m.ctrls.Get(i); c {
 		case ctrlEmpty:
 			fmt.Fprintf(&buf, "  %4d: %02x [empty]\n", i, c)
 		case ctrlDeleted:
@@ -873,8 +873,11 @@ func (m *Map[K, V]) GoString() string {
 // convenient to calculate for an entire group at once (e.g. see matchEmpty).
 type bitset uint64
 
-// first returns the relative index of the first slot in the set.
+// first assumes that only the MSB of each control byte can be set (e.g. bitset
+// is the result of matchEmpty or similar) and returns the relative index of the
+// first control byte in the group that has the MSB set.
 //
+// Returns 8 if the bitset is 0.
 // Returns groupSize if the bitset is empty.
 func (b bitset) first() uintptr {
 	return uintptr(bits.TrailingZeros64(uint64(b))) >> 3
@@ -910,27 +913,13 @@ func (b bitset) String() string {
 	return buf.String()
 }
 
-// Each slot in the hash table has a control byte which can have one of four
-// states: empty, deleted, full and the sentinel. They have the following bit
-// patterns:
-//
-//	   empty: 1 0 0 0 0 0 0 0
-//	 deleted: 1 1 1 1 1 1 1 0
-//	    full: 0 h h h h h h h  // h represents the H1 hash bits
-//	sentinel: 1 1 1 1 1 1 1 1
-type ctrl uint8
-
-var emptyCtrls = func() unsafeSlice[ctrl] {
-	v := make([]ctrl, groupSize)
-	for i := range v {
-		v[i] = ctrlEmpty
-	}
-	return makeUnsafeSlice(v)
-}()
+// ctrlGroup contains a group of 8 control bytes (in little-endian). Note that a
+// group can start at any control byte (not just those that are 8-byte aligned).
+type ctrlGroup uint64
 
 // matchH2 returns the set of slots which are full and for which the 7-bit hash
 // matches the given value. May return false positives.
-func (c *ctrl) matchH2(h uintptr) bitset {
+func (g *ctrlGroup) matchH2(h uintptr) bitset {
 	// NB: This generic matching routine produces false positive matches when
 	// h is 2^N and the control bytes have a seq of 2^N followed by 2^N+1. For
 	// example: if ctrls==0x0302 and h=02, we'll compute v as 0x0100. When we
@@ -939,13 +928,12 @@ func (c *ctrl) matchH2(h uintptr) bitset {
 	// just a rare inefficiency. Note that they only occur if there is a real
 	// match and never occur on ctrlEmpty, ctrlDeleted, or ctrlSentinel. The
 	// subsequent key comparisons ensure that there is no correctness issue.
-	v := *(*uint64)((unsafe.Pointer)(c)) ^ (bitsetLSB * uint64(h))
+	v := uint64(*g) ^ (bitsetLSB * uint64(h))
 	return bitset(((v - bitsetLSB) &^ v) & bitsetMSB)
 }
 
 // matchEmpty returns the set of slots in the group that are empty.
-func (c *ctrl) matchEmpty() bitset {
-	v := *(*uint64)((unsafe.Pointer)(c))
+func (g *ctrlGroup) matchEmpty() bitset {
 	// An empty slot is              1000 0000
 	// A deleted or sentinel slot is 1111 111?
 	// A full slot is                0??? ????
@@ -953,26 +941,27 @@ func (c *ctrl) matchEmpty() bitset {
 	// A slot is empty iff bit 7 is set and bit 1 is not.
 	// We could select any of the other bits here (e.g. v << 1 would also
 	// work).
+	v := uint64(*g)
 	return bitset((v &^ (v << 6)) & bitsetMSB)
 }
 
 // matchEmptyOrDeleted returns the set of slots in the group that are empty or
 // deleted.
-func (c *ctrl) matchEmptyOrDeleted() bitset {
+func (g *ctrlGroup) matchEmptyOrDeleted() bitset {
 	// An empty slot is  1000 0000.
 	// A deleted slot is 1111 1110.
 	// The sentinel is   1111 1111.
 	// A full slot is    0??? ????
 	//
 	// A slot is empty or deleted iff bit 7 is set and bit 0 is not.
-	v := *(*uint64)((unsafe.Pointer)(c))
+	v := uint64(*g)
 	return bitset((v &^ (v << 7)) & bitsetMSB)
 }
 
 // convertNonFullToEmptyAndFullToDeleted converts deleted or sentinel control
 // bytes in a group to empty control bytes, and control bytes indicating full
 // slots to deleted control bytes.
-func (c *ctrl) convertNonFullToEmptyAndFullToDeleted() {
+func (g *ctrlGroup) convertNonFullToEmptyAndFullToDeleted() {
 	// An empty slot is     1000 0000
 	// A deleted slot is    1111 1110
 	// The sentinel slot is 1111 1111
@@ -985,7 +974,7 @@ func (c *ctrl) convertNonFullToEmptyAndFullToDeleted() {
 	//     v:             1000 0000
 	//     ^v:            0111 1111
 	//     ^v + (v >> 7): 1000 0000
-	//     &^ bitsetLSB:  1000 0000  = empty slot.
+	//     &^ bitsetLSB:  1000 0000 = empty slot.
 	//
 	// - if the MSB was not set (i.e. full slot):
 	//     v:             0000 0000
@@ -993,10 +982,48 @@ func (c *ctrl) convertNonFullToEmptyAndFullToDeleted() {
 	//     ^v + (v >> 7): 1111 1111
 	//     &^ bitsetLSB:  1111 1110 = deleted slot.
 	//
-	p := (*uint64)((unsafe.Pointer)(c))
-	v := *p & bitsetMSB
-	*p = (^v + (v >> 7)) &^ bitsetLSB
+	v := uint64(*g) & bitsetMSB
+	*g = ctrlGroup((^v + (v >> 7)) &^ bitsetLSB)
 }
+
+// Each slot in the hash table has a control byte which can have one of four
+// states: empty, deleted, full and the sentinel. They have the following bit
+// patterns:
+//
+//	   empty: 1 0 0 0 0 0 0 0
+//	 deleted: 1 1 1 1 1 1 1 0
+//	    full: 0 h h h h h h h  // h represents the H1 hash bits
+//	sentinel: 1 1 1 1 1 1 1 1
+type ctrl uint8
+
+// ctrlBytes is the slice of control bytes.
+type ctrlBytes struct {
+	unsafeSlice[ctrl]
+}
+
+func makeCtrlBytes(s []ctrl) ctrlBytes {
+	return ctrlBytes{unsafeSlice: makeUnsafeSlice(s)}
+}
+
+// Get returns the i-th control byte.
+func (cb ctrlBytes) Get(i uintptr) ctrl {
+	return *(*ctrl)(unsafe.Add(cb.ptr, i))
+}
+
+// GroupAt returns a pointer to the group that starts at i. The ctrlGroup
+// contains the values of control bytes i through i+7. A group can start at any
+// index (it does not have to be 8-byte aligned).
+func (cb ctrlBytes) GroupAt(i uintptr) *ctrlGroup {
+	return (*ctrlGroup)(unsafe.Add(cb.ptr, i))
+}
+
+var emptyCtrls = func() ctrlBytes {
+	v := make([]ctrl, groupSize)
+	for i := range v {
+		v[i] = ctrlEmpty
+	}
+	return makeCtrlBytes(v)
+}()
 
 // probeSeq maintains the state for a probe sequence. The sequence is a
 // triangular progression of the form
