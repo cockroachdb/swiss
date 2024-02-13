@@ -16,6 +16,7 @@ package swiss
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"sort"
 	"testing"
@@ -40,19 +41,23 @@ func (m *Map[K, V]) toBuiltinMap() map[K]V {
 // uniformly randomly. If we promote this method to the public API it should
 // take a rand.Rand.
 func (m *Map[K, V]) randElement() (key K, value V, ok bool) {
-	// TODO(peter): fixme
-	t := &m.bucket0
-	if t.capacity > 0 {
-		offset := uintptr(rand.Intn(int(t.capacity)))
-		for i := uintptr(0); i <= t.capacity; i++ {
-			j := (i + offset) & t.capacity
-			if (*t.ctrls.At(j) & ctrlEmpty) != ctrlEmpty {
-				s := t.slots.At(j)
-				return s.key, s.value, true
+	// TODO(peter): Start from a random bucket rather that the first bucket.
+	m.buckets(func(b *bucket[K, V]) bool {
+		if b.used > 0 {
+			offset := uintptr(rand.Intn(int(b.capacity)))
+			for i := uintptr(0); i <= b.capacity; i++ {
+				j := (i + offset) & b.capacity
+				if (*b.ctrls.At(j) & ctrlEmpty) != ctrlEmpty {
+					s := b.slots.At(j)
+					key, value = s.key, s.value
+					ok = true
+					return false
+				}
 			}
 		}
-	}
-	return key, value, false
+		return true
+	})
+	return
 }
 
 func TestLittleEndian(t *testing.T) {
@@ -280,9 +285,10 @@ func TestInitialCapacity(t *testing.T) {
 
 func TestBasic(t *testing.T) {
 	goodHash := New[int, int](0)
-	badHash := New[int, int](0, WithHash[int, int](func(key *int, seed uintptr) uintptr {
-		return 0
-	}))
+	badHash := New[int, int](0,
+		WithHash[int, int](func(key *int, seed uintptr) uintptr {
+			return 0
+		}))
 
 	for _, m := range []*Map[int, int]{goodHash, badHash} {
 		t.Run("", func(t *testing.T) {
@@ -333,9 +339,13 @@ func TestBasic(t *testing.T) {
 
 func TestRandom(t *testing.T) {
 	goodHash := New[int, int](0)
-	badHash := New[int, int](0, WithHash[int, int](func(key *int, seed uintptr) uintptr {
-		return 0
-	}))
+	badHash := New[int, int](0,
+		WithHash[int, int](func(key *int, seed uintptr) uintptr {
+			// TODO(peter): Return a random but constant hash rather always
+			// returning 0.
+			return 0
+		}),
+		WithMaxBucketCapacity[int, int](math.MaxUint64))
 
 	for _, m := range []*Map[int, int]{goodHash, badHash} {
 		t.Run("", func(t *testing.T) {
@@ -439,7 +449,8 @@ func (a *countingAllocator[K, V]) FreeControls(_ []uint8) {
 
 func TestAllocator(t *testing.T) {
 	a := &countingAllocator[int, int]{}
-	m := New[int, int](0, WithAllocator[int, int](a))
+	m := New[int, int](0, WithAllocator[int, int](a),
+		WithMaxBucketCapacity[int, int](math.MaxUint64))
 
 	for i := 0; i < 100; i++ {
 		m.Put(i, i)

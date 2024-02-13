@@ -253,7 +253,7 @@ type bucket[K comparable, V any] struct {
 	// then this is the index of the first entry in Map.dir which points to
 	// this bucket and the following 1<<(globalDepth-localDepth) entries will
 	// also point to this bucket.
-	index uint
+	index uintptr
 }
 
 // Map is an unordered map from keys to values with Put, Get, Delete, and All
@@ -291,13 +291,8 @@ type Map[K comparable, V any] struct {
 	maxBucketCapacity uintptr
 }
 
-func normalizeCapacity(capacity int) uintptr {
-	// If the user specified a power of 2, just return that value minus 1
-	// rather than bumping up to the next power of 2.
-	if (capacity & (capacity - 1)) == 0 {
-		return uintptr(capacity) - 1
-	}
-	return (uintptr(1) << bits.Len(uint(capacity))) - 1
+func normalizeCapacity(capacity uintptr) uintptr {
+	return (uintptr(1) << bits.Len64(uint64(capacity)-1)) - 1
 }
 
 // New constructs a new M with the specified initial capacity. If
@@ -322,13 +317,26 @@ func New[K comparable, V any](initialCapacity int, options ...option[K, V]) *Map
 	}
 
 	if m.maxBucketCapacity > 0 {
-		m.maxBucketCapacity = normalizeCapacity(int(m.maxBucketCapacity))
+		// TODO(peter): Should there be a minimum maxBucketCapacity?
+		m.maxBucketCapacity = normalizeCapacity(m.maxBucketCapacity)
+	} else {
+		// TODO(peter): What should this be set to? Should it depend on
+		// sizeof(Slot[K,V])?
+		m.maxBucketCapacity = 7
 	}
 
 	if initialCapacity > 0 {
 		// targetCapacity is the smallest value of the form 2^k-1 that is >=
 		// initialCapacity.
-		m.bucket0.resize(m, normalizeCapacity(initialCapacity))
+		//
+		// TODO(peter): If initialCapacity is larger than maxBucketCapacity we
+		// need to size the directory appropriately. We'll size each bucket to
+		// maxBucketCapacity and create enough buckets to hold
+		// initialCapacity. Probably easiest to just create one bucket of the
+		// desired capacity and continue to split the buckets. Should add a
+		// fast path to bucket splitting where it doesn't do any work if the
+		// bucket is empty.
+		m.bucket0.resize(m, normalizeCapacity(uintptr(initialCapacity)))
 	}
 
 	m.buckets(func(b *bucket[K, V]) bool {
@@ -413,7 +421,13 @@ func (m *Map[K, V]) Put(key K, value V) {
 			// overcrowded (i.e. the load factor is greater than 7/8 for big tables;
 			// small tables use a max load factor of 1).
 			if b.growthLeft == 0 {
-				b.rehash(m)
+				split := b.rehash(m)
+				// If we split the bucket redetermine which bucket the key
+				// resides in. Note that we don't have to restart the entire
+				// Put process as we know the key doesn't exist in the map.
+				if split {
+					b = m.bucket(h)
+				}
 			}
 			b.uncheckedPut(h, key, value)
 			b.used++
@@ -467,7 +481,7 @@ func (m *Map[K, V]) Get(key K) (value V, ok bool) {
 	// less than 1/8 per find.
 	seq := makeProbeSeq(h1(h), b.capacity)
 	if debug {
-		fmt.Printf("get(%v): %s\n", key, seq)
+		fmt.Printf("get(%v): bucket=%d %s\n", key, b.index, seq)
 	}
 
 	for ; ; seq = seq.next() {
@@ -608,6 +622,10 @@ func (m *Map[K, V]) Delete(key K) {
 // See https://github.com/golang/go/issues/61897.
 func (m *Map[K, V]) All(yield func(key K, value V) bool) {
 	m.buckets(func(b *bucket[K, V]) bool {
+		if b.used == 0 {
+			return true
+		}
+
 		// Snapshot the capacity, controls, and slots so that iteration remains
 		// valid if the map is resized during iteration.
 		capacity := b.capacity
@@ -679,18 +697,79 @@ func (m *Map[K, V]) buckets(yield func(b *bucket[K, V]) bool) {
 		return
 	}
 
-	var last *bucket[K, V]
-	for i, n := 0, 1<<m.globalDepth(); i < n; i++ {
-		b := *m.dir.At(uintptr(i))
-		if b == last {
-			continue
-		}
+	// While iterating the size of the directory can grow so our termination
+	// point changes.
+	for i := uintptr(0); i < m.bucketCount(); {
+		// We want to iterate over each bucket once, and if a bucket splits
+		// while we're iterating over it we want to skip over all of the
+		// buckets newly split from the one we were iterating over. We do this
+		// by snapshotting the bucket's local depth and using the snapshotted
+		// local depth to determine how many directory entries to skip over.
+		b := *m.dir.At(i)
+		localDepth := b.localDepth
+
 		yield(b)
+
+		i = b.index + bucketStep(m.globalDepth(), localDepth)
+	}
+}
+
+// dirEntries calls yield sequentially for every entry in the directory. If
+// yield returns false, iteration stops.
+func (m *Map[K, V]) dirEntries(yield func(b *bucket[K, V]) bool) {
+	if m.globalShift == 0 {
+		yield(&m.bucket0)
+		return
+	}
+
+	for i, n := 0, 1<<m.globalDepth(); i < n; i++ {
+		yield(*m.dir.At(uintptr(i)))
 	}
 }
 
 func (m *Map[K, V]) globalDepth() uint {
+	if m.globalShift == 0 {
+		return 0
+	}
 	return 64 - m.globalShift
+}
+
+func (m *Map[K, V]) bucketCount() uintptr {
+	return uintptr(1) << m.globalDepth()
+}
+
+func bucketStep(globalDepth, localDepth uint) uintptr {
+	return uintptr(1) << (globalDepth - localDepth)
+}
+
+func (m *Map[K, V]) checkInvariants() {
+	if invariants {
+		if m.globalShift == 0 {
+			if m.dir.ptr != nil {
+				panic("unexpectedly non-nil directory")
+			}
+			if m.bucket0.localDepth != 0 {
+				panic(fmt.Sprintf("expected local-depth=0, but found %d", m.bucket0.localDepth))
+			}
+		} else {
+			i := uintptr(0)
+			m.dirEntries(func(b *bucket[K, V]) bool {
+				if b == nil {
+					panic(fmt.Sprintf("dir[%d]: nil bucket", i))
+				}
+				if b.localDepth > m.globalDepth() {
+					panic(fmt.Sprintf("dir[%d]: local-depth=%d is greater than global-depth=%d",
+						i, b.localDepth, m.globalDepth()))
+				}
+				n := uintptr(1) << (m.globalDepth() - b.localDepth)
+				if i < b.index || i >= b.index+n {
+					panic(fmt.Sprintf("dir[%d]: out of expected range [%d,%d)", i, b.index, b.index+n))
+				}
+				i++
+				return true
+			})
+		}
+	}
 }
 
 // setCtrl sets the control byte at index i, taking care to mirror the byte to
@@ -702,6 +781,10 @@ func (b *bucket[K, V]) setCtrl(i uintptr, v ctrl) {
 	// to do it only for the first groupSize slots. Note that the index will
 	// be the identity for slots in the range [groupSize,capacity).
 	*b.ctrls.At(((i - (groupSize - 1)) & b.capacity) + (groupSize - 1)) = v
+}
+
+func (b *bucket[K, V]) tombstones() uintptr {
+	return (b.capacity*maxAvgGroupLoad)/groupSize - uintptr(b.used)
 }
 
 // wasNeverFull returns true if index i was never part a full group. This
@@ -784,7 +867,7 @@ func (b *bucket[K, V]) uncheckedPut(h uintptr, key K, value V) {
 	}
 }
 
-func (b *bucket[K, V]) rehash(m *Map[K, V]) {
+func (b *bucket[K, V]) rehash(m *Map[K, V]) (split bool) {
 	// Rehash in place if we can recover >= 1/3 of the capacity. Note that
 	// this heuristic differs from Abseil's and was experimentally determined
 	// to balance performance on the PutDelete benchmark vs achieving a
@@ -798,30 +881,25 @@ func (b *bucket[K, V]) rehash(m *Map[K, V]) {
 	// to reclaim because every tombstone will be dropped and we're only
 	// called if we've reached the thresold of capacity/8 empty slots. So the
 	// number of tomstones is capacity*7/8 - used.
-
-	recoverable := (b.capacity*maxAvgGroupLoad)/groupSize - uintptr(b.used)
-	if b.capacity > groupSize && recoverable >= b.capacity/3 {
+	if b.capacity > groupSize && b.tombstones() >= b.capacity/3 {
 		b.rehashInPlace(m)
-	} else {
-		b.resize(m, 2*b.capacity+1)
+		return false
 	}
+
+	// If the newCapacity is larger than the maxBucketCapacity split the
+	// bucket instead of resizing. Each of the new buckets will be the same
+	// size as the current bucket.
+	newCapacity := 2*b.capacity + 1
+	if newCapacity <= m.maxBucketCapacity {
+		b.resize(m, newCapacity)
+		return false
+	}
+
+	b.split(m)
+	return true
 }
 
-// resize resize the capacity of the table by allocating a bigger array and
-// uncheckedPutting each element of the table into the new array (we know that
-// no insertion here will Put an already-present value), and discard the old
-// backing array.
-func (b *bucket[K, V]) resize(m *Map[K, V], newCapacity uintptr) {
-	// TODO(peter): If the bucket is growing to large, split it instead. Need
-	// to think through what happens if the hash function is bad (e.g. one
-	// that always returns zero) as we won't be able to divide the entries
-	// between the 2 buckets.
-
-	if (1 + newCapacity) < groupSize {
-		newCapacity = groupSize - 1
-	}
-
-	oldCtrls, oldSlots := b.ctrls, b.slots
+func (b *bucket[K, V]) init(m *Map[K, V], newCapacity uintptr) {
 	b.slots = makeUnsafeSlice(m.allocator.AllocSlots(int(newCapacity)))
 	b.ctrls = makeCtrlBytes(unsafeConvertSlice[ctrl](
 		m.allocator.AllocControls(int(newCapacity + groupSize))))
@@ -829,6 +907,8 @@ func (b *bucket[K, V]) resize(m *Map[K, V], newCapacity uintptr) {
 		*b.ctrls.At(i) = ctrlEmpty
 	}
 	*b.ctrls.At(newCapacity) = ctrlSentinel
+
+	b.capacity = newCapacity
 
 	if newCapacity < groupSize {
 		// If the map fits in a single group then we're able to fill all of
@@ -838,9 +918,20 @@ func (b *bucket[K, V]) resize(m *Map[K, V], newCapacity uintptr) {
 	} else {
 		b.growthLeft = int((newCapacity * maxAvgGroupLoad) / groupSize)
 	}
+}
 
+// resize resize the capacity of the table by allocating a bigger array and
+// uncheckedPutting each element of the table into the new array (we know that
+// no insertion here will Put an already-present value), and discard the old
+// backing array.
+func (b *bucket[K, V]) resize(m *Map[K, V], newCapacity uintptr) {
+	if (1 + newCapacity) < groupSize {
+		newCapacity = groupSize - 1
+	}
+
+	oldCtrls, oldSlots := b.ctrls, b.slots
 	oldCapacity := b.capacity
-	b.capacity = newCapacity
+	b.init(m, newCapacity)
 
 	if debug {
 		fmt.Printf("resize: capacity=%d->%d  growth-left=%d\n",
@@ -848,7 +939,7 @@ func (b *bucket[K, V]) resize(m *Map[K, V], newCapacity uintptr) {
 	}
 
 	for i := uintptr(0); i < oldCapacity; i++ {
-		c := *oldCtrls.At(i)
+		c := oldCtrls.Get(i)
 		if c == ctrlEmpty || c == ctrlDeleted {
 			continue
 		}
@@ -863,6 +954,164 @@ func (b *bucket[K, V]) resize(m *Map[K, V], newCapacity uintptr) {
 	}
 
 	b.checkInvariants(m)
+}
+
+func (b *bucket[K, V]) split(m *Map[K, V]) {
+	// const debug = true
+	if debug {
+		fmt.Printf("split(bucket %d): local-depth=%d  global-depth=%d\n%#v",
+			b.index, b.localDepth, m.globalDepth(), b)
+		i := 0
+		m.dirEntries(func(b *bucket[K, V]) bool {
+			fmt.Printf("  %d: bucket %d: local-depth=%d\n", i, b.index, b.localDepth)
+			i++
+			return true
+		})
+	}
+
+	// Grow the directory if necessary.
+	if b.localDepth >= m.globalDepth() {
+		globalDepth := b.localDepth + 1
+		newDir := makeUnsafeSlice(make([]*bucket[K, V], 1<<globalDepth))
+
+		if debug {
+			fmt.Printf("split: global-depth=%d->%d\n", m.globalDepth(), globalDepth)
+		}
+
+		var last *bucket[K, V]
+		i := uintptr(0)
+		m.dirEntries(func(b *bucket[K, V]) bool {
+			if b == last {
+				return true
+			}
+			last = b
+			b.index = i
+			step := bucketStep(globalDepth, b.localDepth)
+			if debug {
+				fmt.Printf("  init: %d-%d  [local-depth=%d]\n", i, i+step, b.localDepth)
+			}
+			for j := uintptr(0); j < step; j++ {
+				*newDir.At(i + j) = b
+			}
+			i += step
+			return true
+		})
+
+		m.dir = newDir
+		m.globalShift = 64 - globalDepth
+
+		m.checkInvariants()
+	}
+
+	b.localDepth++
+
+	// Create and install the new bucket in the directory.
+	nb := &bucket[K, V]{localDepth: b.localDepth}
+	nb.init(m, b.capacity)
+	nb.index = b.index + bucketStep(m.globalDepth(), b.localDepth)
+	for j, n := uintptr(0), nb.index-b.index; j < n; j++ {
+		*m.dir.At(nb.index + j) = nb
+	}
+
+	if debug {
+		fmt.Printf("global-depth=%d\n", m.globalDepth())
+		i := 0
+		m.dirEntries(func(b *bucket[K, V]) bool {
+			fmt.Printf("  %d: bucket %d: local-depth=%d\n", i, b.index, b.localDepth)
+			i++
+			return true
+		})
+	}
+
+	m.checkInvariants()
+
+	// Divide the records between the 2 buckets (b and nb). This is done by
+	// examining the new bit in the hash that was added to the bucket index.
+	// If that bit is 0 the record stays in bucket b. If that bit is 1 the
+	// record is moved to bucket nb.
+	mask := uintptr(1) << (64 - b.localDepth)
+	for i := uintptr(0); i < b.capacity; i++ {
+		c := b.ctrls.Get(i)
+		if c == ctrlEmpty || c == ctrlDeleted {
+			continue
+		}
+		slot := b.slots.At(i)
+		h := m.hash(noescape(unsafe.Pointer(&slot.key)), m.seed)
+
+		if (h & mask) == 0 {
+			if invariants && b != m.bucket(h) {
+				panic(fmt.Sprintf("computed incorrect bucket %d != %d", b.index, m.bucket(h).index))
+			}
+			if debug {
+				fmt.Printf("split(%d): not-moving bit=%d [%064b]\n",
+					i, 64-b.localDepth, h)
+			}
+			continue
+		}
+		if invariants && nb != m.bucket(h) {
+			panic(fmt.Sprintf("computed incorrect bucket %d != %d", nb.index, m.bucket(h).index))
+		}
+
+		nb.uncheckedPut(h, slot.key, slot.value)
+		nb.used++
+
+		if b.wasNeverFull(i) {
+			b.setCtrl(i, ctrlEmpty)
+			b.growthLeft++
+
+			if debug {
+				fmt.Printf("split(%d): key=%v used=%d growth-left=%d\n",
+					i, slot.key, b.used, b.growthLeft)
+			}
+		} else {
+			b.setCtrl(i, ctrlDeleted)
+
+			if debug {
+				fmt.Printf("delete(%d): key=%v used=%d\n", i, slot.key, b.used)
+			}
+		}
+
+		*slot = Slot[K, V]{}
+		b.used--
+	}
+
+	if invariants {
+		m.buckets(func(b *bucket[K, V]) bool {
+			b.checkInvariants(m)
+			return true
+		})
+	}
+
+	// TODO(peter): If we didn't move any records, or moved all the records,
+	// then we're better off just doubling the size of the bucket and dropping
+	// the empty bucket. Something is degenerate about the hash function if
+	// this is occurring. We should attempt the bucket split before resizing
+	// the directory so that this degenerate case can stick with a single
+	// bucket rather than growing the directory repeatedly.
+
+	// The loop above should will either have marked slots in b as empty or
+	// deleted. Rehash-in-place if we didn't mark any as deleted and need to
+	// drop tombstones.
+	if b.growthLeft == 0 {
+		if b.tombstones() > 0 {
+			b.rehashInPlace(m)
+			return
+		}
+		if debug {
+			fmt.Printf("split: failed to free up space, splitting again\n")
+		}
+		b.resize(m, 2*b.capacity+1)
+	}
+	if nb.growthLeft == 0 {
+		if debug {
+			fmt.Printf("split: failed to free up space, splitting again\n")
+		}
+		nb.resize(m, 2*b.capacity+1)
+	}
+
+	if debug {
+		fmt.Printf("split: done\nbucket %d: %#vbucket %d: %#v", b.index, b, nb.index, nb)
+	}
 }
 
 func (b *bucket[K, V]) rehashInPlace(m *Map[K, V]) {
