@@ -343,21 +343,21 @@ func New[K comparable, V any](initialCapacity int, options ...option[K, V]) *Map
 			globalDepth := uint(bits.Len64(uint64(nBuckets) - 1))
 			m.growDirectory(globalDepth)
 
-			// TODO(peter): Using dirEntries isn't very ergonomic. Just
-			// allocate a slice and initialize it the obvious way. Can also
-			// allocate a slice of buckets. Is it worthwhile to try and use
-			// Map.bucket0?
-			i := uintptr(0)
-			m.dirEntries(func(b *bucket[K, V]) bool {
-				if i != 0 {
-					b = &bucket[K, V]{index: i}
-					*m.dir.At(b.index) = b
-				}
+			n := m.bucketCount()
+			buckets := make([]bucket[K, V], n)
+
+			*m.dir.At(0) = &m.bucket0
+			for i := uintptr(1); i < n; i++ {
+				*m.dir.At(i) = &buckets[i]
+			}
+
+			for i := uintptr(0); i < n; i++ {
+				b := *m.dir.At(i)
 				b.init(m, m.maxBucketCapacity)
-				b.localDepth = m.globalDepth()
-				i++
-				return true
-			})
+				b.localDepth = globalDepth
+				b.index = i
+			}
+
 			m.checkInvariants()
 		}
 	}
