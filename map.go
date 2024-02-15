@@ -197,8 +197,6 @@ import (
 )
 
 const (
-	debug = false
-
 	groupSize       = 8
 	maxAvgGroupLoad = 7
 
@@ -397,29 +395,15 @@ func (m *Map[K, V]) Put(key K, value V) {
 	// find routine for Get, Put, and Delete, we have to manually inline the
 	// find routine for performance.
 	seq := makeProbeSeq(h1(h), b.capacity)
-	if debug {
-		fmt.Printf("put(%v): %s\n", key, seq)
-	}
-
 	for ; ; seq = seq.next() {
 		g := b.ctrls.GroupAt(seq.offset)
 		match := g.matchH2(h2(h))
-		if debug {
-			fmt.Printf("put(probing): offset=%d h2=%02x match=%s [% 02x]\n",
-				seq.offset, h2(h), match, b.ctrls.Slice(seq.offset, seq.offset+groupSize))
-		}
 
 		for match != 0 {
 			slotIdx := match.first()
 			i := seq.offsetAt(slotIdx)
-			if debug {
-				fmt.Printf("put(checking): index=%d  key=%v\n", i, b.slots.At(i).key)
-			}
 			slot := b.slots.At(i)
 			if key == slot.key {
-				if debug {
-					fmt.Printf("put(updating): index=%d  key=%v\n", i, key)
-				}
 				slot.value = value
 				b.checkInvariants(m)
 				return
@@ -429,10 +413,6 @@ func (m *Map[K, V]) Put(key K, value V) {
 
 		match = g.matchEmpty()
 		if match != 0 {
-			if debug {
-				fmt.Printf("put(not-found): offset=%d match-empty=%s [% 02x]\n",
-					seq.offset, match, b.ctrls.Slice(seq.offset, seq.offset+groupSize))
-			}
 			// Before performing the insertion we may decide the bucket is
 			// getting overcrowded (i.e. the load factor is greater than 7/8
 			// for big tables; small tables use a max load factor of 1).
@@ -451,11 +431,6 @@ func (m *Map[K, V]) Put(key K, value V) {
 			m.used++
 			b.checkInvariants(m)
 			return
-		}
-
-		if debug {
-			fmt.Printf("put(skipping): offset=%d match-empty=%s [% 02x]\n",
-				seq.offset, match, b.ctrls.Slice(seq.offset, seq.offset+groupSize))
 		}
 	}
 }
@@ -497,24 +472,13 @@ func (m *Map[K, V]) Get(key K) (value V, ok bool) {
 	// meaning that the number of false positive comparisons we must perform is
 	// less than 1/8 per find.
 	seq := makeProbeSeq(h1(h), b.capacity)
-	if debug {
-		fmt.Printf("get(%v): bucket=%d %s\n", key, b.index, seq)
-	}
-
 	for ; ; seq = seq.next() {
 		g := b.ctrls.GroupAt(seq.offset)
 		match := g.matchH2(h2(h))
-		if debug {
-			fmt.Printf("get(probing): offset=%d h2=%02x match=%s [% 02x]\n",
-				seq.offset, h2(h), match, b.ctrls.Slice(seq.offset, seq.offset+groupSize))
-		}
 
 		for match != 0 {
 			slotIdx := match.first()
 			i := seq.offsetAt(slotIdx)
-			if debug {
-				fmt.Printf("get(checking): index=%d  key=%v\n", i, b.slots.At(i).key)
-			}
 			slot := b.slots.At(i)
 			if key == slot.key {
 				return slot.value, true
@@ -524,16 +488,7 @@ func (m *Map[K, V]) Get(key K) (value V, ok bool) {
 
 		match = g.matchEmpty()
 		if match != 0 {
-			if debug {
-				fmt.Printf("get(not-found): offset=%d match-empty=%s [% 02x]\n",
-					seq.offset, match, b.ctrls.Slice(seq.offset, seq.offset+groupSize))
-			}
 			return value, false
-		}
-
-		if debug {
-			fmt.Printf("get(skipping): offset=%d match-empty=%s [% 02x]\n",
-				seq.offset, match, b.ctrls.Slice(seq.offset, seq.offset+groupSize))
 		}
 	}
 }
@@ -550,24 +505,13 @@ func (m *Map[K, V]) Delete(key K) {
 	// find routine for Get, Put, and Delete, we have to manually inline the
 	// find routine for performance.
 	seq := makeProbeSeq(h1(h), b.capacity)
-	if debug {
-		fmt.Printf("delete(%v): %s\n", key, seq)
-	}
-
 	for ; ; seq = seq.next() {
 		g := b.ctrls.GroupAt(seq.offset)
 		match := g.matchH2(h2(h))
-		if debug {
-			fmt.Printf("delete(probing): offset=%d h2=%02x match=%s [% 02x]\n",
-				seq.offset, h2(h), match, b.ctrls.Slice(seq.offset, seq.offset+groupSize))
-		}
 
 		for match != 0 {
 			slotIdx := match.first()
 			i := seq.offsetAt(slotIdx)
-			if debug {
-				fmt.Printf("delete(checking): index=%d  key=%v\n", i, b.slots.At(i).key)
-			}
 			s := b.slots.At(i)
 			if key == s.key {
 				b.used--
@@ -588,17 +532,8 @@ func (m *Map[K, V]) Delete(key K) {
 				if b.wasNeverFull(i) {
 					b.setCtrl(i, ctrlEmpty)
 					b.growthLeft++
-
-					if debug {
-						fmt.Printf("delete(%v): index=%d used=%d growth-left=%d\n",
-							key, i, b.used, b.growthLeft)
-					}
 				} else {
 					b.setCtrl(i, ctrlDeleted)
-
-					if debug {
-						fmt.Printf("delete(%v): index=%d used=%d\n", key, i, b.used)
-					}
 				}
 				b.checkInvariants(m)
 				return
@@ -608,17 +543,8 @@ func (m *Map[K, V]) Delete(key K) {
 
 		match = g.matchEmpty()
 		if match != 0 {
-			if debug {
-				fmt.Printf("delete(not-found): offset=%d match-empty=%s [% 02x]\n",
-					seq.offset, match, b.ctrls.Slice(seq.offset, seq.offset+groupSize))
-			}
 			b.checkInvariants(m)
 			return
-		}
-
-		if debug {
-			fmt.Printf("delete(skipping): offset=%d match-empty=%s [% 02x]\n",
-				seq.offset, match, b.ctrls.Slice(seq.offset, seq.offset+groupSize))
 		}
 	}
 }
@@ -909,11 +835,6 @@ func (b *bucket[K, V]) wasNeverFull(i uintptr) bool {
 	indexBefore := (i - groupSize) & b.capacity
 	emptyAfter := b.ctrls.GroupAt(i).matchEmpty()
 	emptyBefore := b.ctrls.GroupAt(indexBefore).matchEmpty()
-	if debug {
-		fmt.Printf("wasNeverFull: before=%d/%s/%d after=%d/%s/%d\n",
-			indexBefore, emptyBefore, emptyBefore.absentAtEnd(),
-			i, emptyAfter, emptyAfter.absentAtStart())
-	}
 
 	// We're looking at the control bytes on either side of i trying to determine
 	// if the control byte i ever overlapped with a group that was full:
@@ -950,18 +871,9 @@ func (b *bucket[K, V]) uncheckedPut(h uintptr, key K, value V) {
 	// or deleted) slot. We place the key/value into the first such slot in
 	// the group and mark it as full with key's H2.
 	seq := makeProbeSeq(h1(h), b.capacity)
-	if debug {
-		fmt.Printf("put(%v,%v): %s\n", key, value, seq)
-	}
-
 	for ; ; seq = seq.next() {
 		g := b.ctrls.GroupAt(seq.offset)
 		match := g.matchEmptyOrDeleted()
-		if debug {
-			fmt.Printf("put(probing): offset=%d match-empty=%s [% 02x]\n",
-				seq.offset, match, b.ctrls.Slice(seq.offset, seq.offset+groupSize))
-		}
-
 		if match != 0 {
 			i := seq.offsetAt(match.first())
 			slot := b.slots.At(i)
@@ -971,9 +883,6 @@ func (b *bucket[K, V]) uncheckedPut(h uintptr, key K, value V) {
 				b.growthLeft--
 			}
 			b.setCtrl(i, ctrl(h2(h)))
-			if debug {
-				fmt.Printf("put(inserting): index=%d used=%d growth-left=%d\n", i, b.used+1, b.growthLeft)
-			}
 			return
 		}
 	}
@@ -1043,11 +952,6 @@ func (b *bucket[K, V]) resize(m *Map[K, V], newCapacity uintptr) {
 	oldCtrls, oldSlots := b.ctrls, b.slots
 	oldCapacity := b.capacity
 	b.init(m, newCapacity)
-
-	if debug {
-		fmt.Printf("resize: capacity=%d->%d  growth-left=%d\n",
-			oldCapacity, newCapacity, b.growthLeft)
-	}
 
 	for i := uintptr(0); i < oldCapacity; i++ {
 		c := oldCtrls.Get(i)
@@ -1165,22 +1069,6 @@ func (b *bucket[K, V]) split(m *Map[K, V]) {
 }
 
 func (b *bucket[K, V]) rehashInPlace(m *Map[K, V]) {
-	if debug {
-		fmt.Printf("rehash: %d/%d\n", b.used, b.capacity)
-		for i := uintptr(0); i < b.capacity; i++ {
-			switch b.ctrls.Get(i) {
-			case ctrlEmpty:
-				fmt.Printf("  %d: empty\n", i)
-			case ctrlDeleted:
-				fmt.Printf("  %d: deleted\n", i)
-			case ctrlSentinel:
-				fmt.Printf("  %d: sentinel\n", i)
-			default:
-				fmt.Printf("  %d: %v\n", i, b.slots.At(i).key)
-			}
-		}
-	}
-
 	// We want to drop all of the deletes in place. We first walk over the
 	// control bytes and mark every DELETED slot as EMPTY and every FULL slot
 	// as DELETED. Marking the DELETED slots as EMPTY has effectively dropped
@@ -1229,9 +1117,6 @@ func (b *bucket[K, V]) rehashInPlace(m *Map[K, V]) {
 		}
 
 		if i == target || probeIndex(i) == probeIndex(target) {
-			if debug {
-				fmt.Printf("rehash: %d not moving\n", i)
-			}
 			// If the target index falls within the first probe group
 			// then we don't need to move the element as it already
 			// falls in the best probe position.
@@ -1240,9 +1125,6 @@ func (b *bucket[K, V]) rehashInPlace(m *Map[K, V]) {
 		}
 
 		if b.ctrls.Get(target) == ctrlEmpty {
-			if debug {
-				fmt.Printf("rehash: %d -> %d replacing empty\n", i, target)
-			}
 			// The target slot is empty. Transfer the element to the
 			// empty slot and mark the slot at index i as empty.
 			b.setCtrl(target, ctrl(h2(h)))
@@ -1253,9 +1135,6 @@ func (b *bucket[K, V]) rehashInPlace(m *Map[K, V]) {
 		}
 
 		if b.ctrls.Get(target) == ctrlDeleted {
-			if debug {
-				fmt.Printf("rehash: %d -> %d swapping\n", i, target)
-			}
 			// The slot at target has an element (i.e. it was FULL).
 			// We're going to swap our current element with that
 			// element and then repeat processing of index i which now
@@ -1274,24 +1153,6 @@ func (b *bucket[K, V]) rehashInPlace(m *Map[K, V]) {
 	}
 
 	b.growthLeft = int((b.capacity*maxAvgGroupLoad)/groupSize) - b.used
-
-	if debug {
-		fmt.Printf("rehash: done: used=%d growth-left=%d\n", b.used, b.growthLeft)
-		for i := uintptr(0); i < b.capacity; i++ {
-			switch b.ctrls.Get(i) {
-			case ctrlEmpty:
-				fmt.Printf("  %d: empty\n", i)
-			case ctrlDeleted:
-				fmt.Printf("  %d: deleted\n", i)
-			case ctrlSentinel:
-				fmt.Printf("  %d: sentinel\n", i)
-			default:
-				s := b.slots.At(i)
-				h := m.hash(noescape(unsafe.Pointer(&s.key)), m.seed)
-				fmt.Printf("  %d: %02x/%02x %v\n", i, b.ctrls.Get(i), h2(h), s.key)
-			}
-		}
-	}
 
 	b.checkInvariants(m)
 }
