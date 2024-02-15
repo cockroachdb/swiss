@@ -651,16 +651,10 @@ func (m *Map[K, V]) buckets(offset uintptr, yield func(b *bucket[K, V]) bool) {
 		return
 	}
 
-	// While iterating the size of the directory can grow if the yield
-	// function mutates the map. We want to iterate over each bucket once, and
-	// if a bucket splits while we're iterating over it we want to skip over
-	// all of the buckets newly split from the one we were iterating over. We
-	// do this by snapshotting the bucket's local depth and using the
-	// snapshotted local depth to determine how many directory entries to skip
-	// over. Loop termination is handled by remembering our start bucket and
-	// exiting when we reach it again. Note that when a bucket is split the
-	// existing bucket always ends up earlier in the directory so we'll reach
-	// it before we reach any of the buckets that were split off.
+	// Loop termination is handled by remembering the start bucket and exiting
+	// when it is reached again. Note that when a bucket is split the existing
+	// bucket always ends up earlier in the directory so we'll reach it before
+	// we reach any of the buckets that were split off.
 	startBucket := *m.dir.At(offset & (m.bucketCount() - 1))
 	for b := startBucket; ; {
 		originalLocalDepth := b.localDepth
@@ -669,9 +663,61 @@ func (m *Map[K, V]) buckets(offset uintptr, yield func(b *bucket[K, V]) bool) {
 			break
 		}
 
-		// Note that b.index can change if yield mutates the map. Refer to the
-		// directory diagrams in the comment at the top of this package
-		// showing the globalDepth growing from 2 to 3.
+		// The size of the directory can grow if the yield function mutates
+		// the map.  We want to iterate over each bucket once, and if a bucket
+		// splits while we're iterating over it we want to skip over all of
+		// the buckets newly split from the one we're iterating over. We do
+		// this by snapshotting the bucket's local depth and using the
+		// snapshotted local depth to compute the bucket step.
+		//
+		// Note that b.index will also change if the directory grows. Consider
+		// the directory below with a globalDepth of 2 containing 4 buckets,
+		// each of which has a localDepth of 2.
+		//
+		//    dir   b.index   b.localDepth
+		//	+-----+---------+--------------+
+		//	|  00 |       0 |            2 |
+		//	+-----+---------+--------------+
+		//	|  01 |       1 |            2 |
+		//	+-----+---------+--------------+
+		//	|  10 |       2 |            2 | <--- iteration point
+		//	+-----+---------+--------------+
+		//	|  11 |       3 |            2 |
+		//	+-----+---------+--------------+
+		//
+		// If the directory grows during iteration, the index of the bucket
+		// we're iterating over will change. If the bucket we're iterating
+		// over split, then the local depth will have increased. Notice how
+		// the bucket that was previously at index 1 now is at index 2 and is
+		// pointed to by 2 directory entries: 010 and 011. The bucket being
+		// iterated over which was previously at index 2 is now at index 4.
+		// Iteration within a bucket takes a snapshot of the controls and
+		// slots to make sure we don't miss keys during iteration or iterate
+		// over keys more than once. But we also need to take care of the case
+		// where the bucket we're iterating over splits. In this case, we need
+		// to skip over the bucket at index 5 which can be done by computing
+		// the bucketStep using the bucket's depth prior to calling yield
+		// which in this example will be 1<<(3-2)==2.
+		//
+		//    dir   b.index   b.localDepth
+		//	+-----+---------+--------------+
+		//	| 000 |       0 |            2 |
+		//	+-----+         |              |
+		//	| 001 |         |              |
+		//	+-----+---------+--------------+
+		//	| 010 |       2 |            2 |
+		//	+-----+         |              |
+		//	| 011 |         |              |
+		//	+-----+---------+--------------+
+		//	| 100 |       4 |            3 |
+		//	+-----+---------+--------------+
+		//	| 101 |       5 |            3 |
+		//	+-----+---------+--------------+
+		//	| 110 |       6 |            2 |
+		//	+-----+         |              |
+		//	| 111 |         |              |
+		//	+-----+---------+--------------+
+
 		i := (b.index + bucketStep(m.globalDepth(), originalLocalDepth)) & (m.bucketCount() - 1)
 		b = *m.dir.At(i)
 		if b == startBucket {
