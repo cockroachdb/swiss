@@ -365,9 +365,6 @@ func TestRandom(t *testing.T) {
 			switch r := rand.Float64(); {
 			case r < 0.5: // 50% inserts
 				k, v := rand.Int(), rand.Int()
-				if debug {
-					fmt.Printf("insert %d: %d\n", k, v)
-				}
 				m.Put(k, v)
 				e[k] = v
 			case r < 0.65: // 15% updates
@@ -375,9 +372,6 @@ func TestRandom(t *testing.T) {
 					require.EqualValues(t, 0, m.Len(), e)
 				} else {
 					v := rand.Int()
-					if debug {
-						fmt.Printf("update %d: %d\n", k, v)
-					}
 					m.Put(k, v)
 					e[k] = v
 				}
@@ -385,9 +379,6 @@ func TestRandom(t *testing.T) {
 				if k, _, ok := m.randElement(); !ok {
 					require.EqualValues(t, 0, m.Len(), e)
 				} else {
-					if debug {
-						fmt.Printf("delete %d\n", k)
-					}
 					m.Delete(k)
 					delete(e, k)
 				}
@@ -395,9 +386,6 @@ func TestRandom(t *testing.T) {
 				if k, v, ok := m.randElement(); !ok {
 					require.EqualValues(t, 0, m.Len(), e)
 				} else {
-					if debug {
-						fmt.Printf("lookup %d: %d vs %d\n", k, e[k], v)
-					}
 					require.EqualValues(t, e[k], v)
 				}
 			default: // 5% rehash in place and iterate
