@@ -160,32 +160,10 @@
 // # Performance
 //
 // A swiss.Map has similar or slightly better performance than Go's builtin
-// map for small map sizes, and is much faster at large map sizes (old=go-map,
-// new=swissmap):
+// map for small map sizes, and is much faster at large map sizes. See
+// [README.md] for details.
 //
-//	name                                         old time/op  new time/op  delta
-//	StringMap/avgLoad,n=10/Map/Get-10            9.46ns ± 4%  8.43ns ± 1%  -10.89%  (p=0.000 n=10+9)
-//	StringMap/avgLoad,n=83/Map/Get-10            10.9ns ± 7%   8.9ns ±12%  -18.45%  (p=0.000 n=10+10)
-//	StringMap/avgLoad,n=671/Map/Get-10           15.4ns ± 3%   9.1ns ± 3%  -40.98%  (p=0.000 n=10+10)
-//	StringMap/avgLoad,n=5375/Map/Get-10          25.8ns ± 1%   9.3ns ± 1%  -63.83%  (p=0.000 n=10+9)
-//	StringMap/avgLoad,n=86015/Map/Get-10         30.4ns ± 1%  10.8ns ± 1%  -64.49%  (p=0.000 n=9+9)
-//	Int64Map/avgLoad,n=10/Map/Get-10             5.05ns ± 2%  4.87ns ± 1%   -3.60%  (p=0.000 n=10+10)
-//	Int64Map/avgLoad,n=83/Map/Get-10             5.27ns ± 5%  5.29ns ±12%     ~     (p=0.912 n=10+10)
-//	Int64Map/avgLoad,n=671/Map/Get-10            6.14ns ± 4%  5.35ns ± 3%  -12.85%  (p=0.000 n=10+10)
-//	Int64Map/avgLoad,n=5375/Map/Get-10           18.4ns ± 4%   5.7ns ± 2%  -68.94%  (p=0.000 n=10+10)
-//	Int64Map/avgLoad,n=86015/Map/Get-10          23.9ns ± 0%   6.9ns ± 0%  -71.35%  (p=0.000 n=10+8)
-//
-//	name                                         old time/op  new time/op  delta
-//	StringMap/avgLoad,n=10/Map/PutDelete-10      25.4ns ± 6%  23.7ns ± 8%   -6.43%  (p=0.004 n=10+10)
-//	StringMap/avgLoad,n=83/Map/PutDelete-10      31.4ns ± 7%  24.3ns ±12%  -22.66%  (p=0.000 n=10+10)
-//	StringMap/avgLoad,n=671/Map/PutDelete-10     45.4ns ± 3%  24.9ns ± 4%  -45.21%  (p=0.000 n=10+10)
-//	StringMap/avgLoad,n=5375/Map/PutDelete-10    56.7ns ± 1%  24.7ns ± 2%  -56.44%  (p=0.000 n=10+10)
-//	StringMap/avgLoad,n=86015/Map/PutDelete-10   60.8ns ± 1%  31.6ns ± 2%  -48.03%  (p=0.000 n=9+9)
-//	Int64Map/avgLoad,n=10/Map/PutDelete-10       18.0ns ± 3%  17.1ns ±34%     ~     (p=0.095 n=9+10)
-//	Int64Map/avgLoad,n=83/Map/PutDelete-10       19.8ns ± 3%  14.6ns ±12%  -26.11%  (p=0.000 n=9+9)
-//	Int64Map/avgLoad,n=671/Map/PutDelete-10      27.2ns ± 3%  15.2ns ± 6%  -44.02%  (p=0.000 n=10+10)
-//	Int64Map/avgLoad,n=5375/Map/PutDelete-10     44.5ns ± 0%  16.9ns ± 3%  -62.10%  (p=0.000 n=7+10)
-//	Int64Map/avgLoad,n=86015/Map/PutDelete-10    50.8ns ± 0%  21.0ns ± 1%  -58.65%  (p=0.000 n=10+10)
+// [README.md] https://github.com/cockroachdb/swiss/blob/main/README.md
 package swiss
 
 import (
@@ -549,6 +527,25 @@ func (m *Map[K, V]) Delete(key K) {
 	}
 }
 
+// Clear deletes all entries from the map resulting in an empty map.
+func (m *Map[K, V]) Clear() {
+	m.buckets(0, func(b *bucket[K, V]) bool {
+		for i := uintptr(0); i < b.capacity; i++ {
+			b.setCtrl(i, ctrlEmpty)
+			*b.slots.At(i) = Slot[K, V]{}
+		}
+
+		b.used = 0
+		b.resetGrowthLeft()
+		return true
+	})
+
+	// Reset the hash seed to make it more difficult for attackers to
+	// repeatedly trigger hash collisions. See issue
+	// https://github.com/golang/go/issues/25237.
+	m.seed = uintptr(fastrand64())
+}
+
 // All calls yield sequentially for each key and value present in the map. If
 // yield returns false, range stops the iteration. The map can be mutated
 // during iteration, though there is no guarantee that the mutations will be
@@ -811,6 +808,10 @@ func (m *Map[K, V]) growDirectory(newGlobalDepth uint) {
 	m.checkInvariants()
 }
 
+// checkInvariants verifies the internal consistency of the map's structure,
+// checking conditions that should always be true for a correctly functioning
+// map. If any of these invariants are violated, it panics, indicating a bug
+// in the map implementation.
 func (m *Map[K, V]) checkInvariants() {
 	if invariants {
 		if m.globalShift == 0 {
@@ -863,6 +864,9 @@ func (b *bucket[K, V]) setCtrl(i uintptr, v ctrl) {
 	*b.ctrls.At(((i - (groupSize - 1)) & b.capacity) + (groupSize - 1)) = v
 }
 
+// tombstones returns the number of deleted (tombstone) entries in the bucket.
+// A tombstone is a slot that has been deleted but is still considered
+// occupied so as not to violate the probing invariant.
 func (b *bucket[K, V]) tombstones() uintptr {
 	return (b.capacity*maxAvgGroupLoad)/groupSize - uintptr(b.used)
 }
@@ -980,14 +984,7 @@ func (b *bucket[K, V]) init(m *Map[K, V], newCapacity uintptr) {
 
 	b.capacity = newCapacity
 
-	if newCapacity < groupSize {
-		// If the map fits in a single group then we're able to fill all of
-		// the slots except 1 (an empty slot is needed to terminate find
-		// operations).
-		b.growthLeft = int(newCapacity - 1)
-	} else {
-		b.growthLeft = int((newCapacity * maxAvgGroupLoad) / groupSize)
-	}
+	b.resetGrowthLeft()
 }
 
 // resize the capacity of the table by allocating a bigger array and
@@ -1198,9 +1195,21 @@ func (b *bucket[K, V]) rehashInPlace(m *Map[K, V]) {
 			target, b.ctrls.Get(target)))
 	}
 
-	b.growthLeft = int((b.capacity*maxAvgGroupLoad)/groupSize) - b.used
+	b.resetGrowthLeft()
+	b.growthLeft -= b.used
 
 	b.checkInvariants(m)
+}
+
+func (b *bucket[K, V]) resetGrowthLeft() {
+	if b.capacity < groupSize {
+		// If the map fits in a single group then we're able to fill all of
+		// the slots except 1 (an empty slot is needed to terminate find
+		// operations).
+		b.growthLeft = int(b.capacity - 1)
+	} else {
+		b.growthLeft = int((b.capacity * maxAvgGroupLoad) / groupSize)
+	}
 }
 
 func (b *bucket[K, V]) checkInvariants(m *Map[K, V]) {
