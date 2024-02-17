@@ -276,13 +276,26 @@ func normalizeCapacity(capacity uintptr) uintptr {
 
 // New constructs a new Map with the specified initial capacity. If
 // initialCapacity is 0 the map will start out with zero capacity and will
-// grow on the first insert. The zero value for an M is not usable.
+// grow on the first insert. The zero value for a Map is not usable.
 func New[K comparable, V any](initialCapacity int, options ...option[K, V]) *Map[K, V] {
+	m := &Map[K, V]{}
+	m.Init(initialCapacity, options...)
+	return m
+}
+
+// Init initializes a Map with the specified initial capacity. If
+// initialCapacity is 0 the map will start out with zero capacity and will
+// grow on the first insert. The zero value for a Map is not usable and Init
+// must be called before using the map.
+//
+// Init is intended for usage when a Map is embedded by value in another
+// structure.
+func (m *Map[K, V]) Init(initialCapacity int, options ...option[K, V]) {
 	// The ctrls for an empty map points to emptyCtrls which simplifies
 	// probing in Get, Put, and Delete. The emptyCtrls never match a probe
 	// operation, but because growthLeft == 0 if we try to insert we'll
 	// immediately rehash and grow.
-	m := &Map[K, V]{
+	*m = Map[K, V]{
 		hash:      getRuntimeHasher[K](),
 		seed:      uintptr(fastrand64()),
 		allocator: defaultAllocator[K, V]{},
@@ -342,7 +355,6 @@ func New[K comparable, V any](initialCapacity int, options ...option[K, V]) *Map
 		b.checkInvariants(m)
 		return true
 	})
-	return m
 }
 
 // Close closes the map, releasing any memory back to its configured
@@ -894,8 +906,8 @@ func (m *Map[K, V]) checkInvariants() {
 
 func (b *bucket[K, V]) close(allocator Allocator[K, V]) {
 	if b.capacity > 0 {
-		allocator.FreeSlots(b.slots.Slice(0, b.capacity))
-		allocator.FreeControls(unsafeConvertSlice[uint8](b.ctrls.Slice(0, b.capacity+groupSize)))
+		allocator.Free(unsafeConvertSlice[uint8](b.ctrls.Slice(0, b.capacity+groupSize)),
+			b.slots.Slice(0, b.capacity))
 		b.capacity = 0
 		b.used = 0
 	}
@@ -1024,9 +1036,10 @@ func (b *bucket[K, V]) init(m *Map[K, V], newCapacity uintptr) {
 		newCapacity = groupSize - 1
 	}
 
-	b.slots = makeUnsafeSlice(m.allocator.AllocSlots(int(newCapacity)))
-	b.ctrls = makeCtrlBytes(unsafeConvertSlice[ctrl](
-		m.allocator.AllocControls(int(newCapacity + groupSize))))
+	ctrls, slots := m.allocator.Alloc(int(newCapacity+groupSize), int(newCapacity))
+	b.ctrls = makeCtrlBytes(unsafeConvertSlice[ctrl](ctrls))
+	b.slots = makeUnsafeSlice(slots)
+
 	for i := uintptr(0); i < newCapacity+groupSize; i++ {
 		*b.ctrls.At(i) = ctrlEmpty
 	}
@@ -1057,8 +1070,8 @@ func (b *bucket[K, V]) resize(m *Map[K, V], newCapacity uintptr) {
 	}
 
 	if oldCapacity > 0 {
-		m.allocator.FreeSlots(oldSlots.Slice(0, oldCapacity))
-		m.allocator.FreeControls(unsafeConvertSlice[uint8](oldCtrls.Slice(0, oldCapacity+groupSize)))
+		m.allocator.Free(unsafeConvertSlice[uint8](oldCtrls.Slice(0, oldCapacity+groupSize)),
+			oldSlots.Slice(0, oldCapacity))
 	}
 
 	b.checkInvariants(m)

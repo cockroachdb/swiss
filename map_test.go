@@ -443,28 +443,17 @@ func TestIterateMutate(t *testing.T) {
 }
 
 type countingAllocator[K comparable, V any] struct {
-	allocSlots int
-	allocCtrls int
-	freeSlots  int
-	freeCtrls  int
+	alloc int
+	free  int
 }
 
-func (a *countingAllocator[K, V]) AllocSlots(n int) []Slot[K, V] {
-	a.allocSlots++
-	return make([]Slot[K, V], n)
+func (a *countingAllocator[K, V]) Alloc(ctrls, slots int) ([]uint8, []Slot[K, V]) {
+	a.alloc++
+	return make([]uint8, ctrls), make([]Slot[K, V], slots)
 }
 
-func (a *countingAllocator[K, V]) AllocControls(n int) []uint8 {
-	a.allocCtrls++
-	return make([]uint8, n)
-}
-
-func (a *countingAllocator[K, V]) FreeSlots(_ []Slot[K, V]) {
-	a.freeSlots++
-}
-
-func (a *countingAllocator[K, V]) FreeControls(_ []uint8) {
-	a.freeCtrls++
+func (a *countingAllocator[K, V]) Free(_ []uint8, _ []Slot[K, V]) {
+	a.free++
 }
 
 func TestAllocator(t *testing.T) {
@@ -478,15 +467,12 @@ func TestAllocator(t *testing.T) {
 
 	// 8 -> 16 -> 32 -> 64 -> 128
 	const expected = 5
-	require.EqualValues(t, expected, a.allocSlots)
-	require.EqualValues(t, expected, a.allocCtrls)
-	require.EqualValues(t, expected-1, a.freeSlots)
-	require.EqualValues(t, expected-1, a.freeCtrls)
+	require.EqualValues(t, expected, a.alloc)
+	require.EqualValues(t, expected-1, a.free)
 
 	m.Close()
 
-	require.EqualValues(t, expected, a.freeSlots)
-	require.EqualValues(t, expected, a.freeCtrls)
+	require.EqualValues(t, expected, a.free)
 }
 
 func TestResizeVsSplit(t *testing.T) {
