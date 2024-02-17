@@ -260,10 +260,12 @@ func benchmarkRuntimeMapPutGrow[T benchTypes](
 }
 
 func benchmarkSwissMapPutGrow[T benchTypes](b *testing.B, n int, genKeys func(start, end int) []T) {
+	var m Map[T, T]
+	options := []option[T, T]{WithSmallAllocator[T, T]()}
 	keys := genKeys(0, n)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m := New[T, T](0)
+		m.Init(0, options...)
 		for _, k := range keys {
 			m.Put(k, k)
 		}
@@ -286,10 +288,12 @@ func benchmarkRuntimeMapPutPreAllocate[T benchTypes](
 func benchmarkSwissMapPutPreAllocate[T benchTypes](
 	b *testing.B, n int, genKeys func(start, end int) []T,
 ) {
+	var m Map[T, T]
+	options := []option[T, T]{WithSmallAllocator[T, T]()}
 	keys := genKeys(0, n)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m := New[T, T](n)
+		m.Init(n, options...)
 		for _, k := range keys {
 			m.Put(k, k)
 		}

@@ -57,36 +57,22 @@ func WithMaxBucketCapacity[K comparable, V any](v uintptr) option[K, V] {
 // controls be freed then Map.Close must be called in order to ensure
 // FreeSlots and FreeControls are called.
 type Allocator[K comparable, V any] interface {
-	// AllocSlots should return a slice equivalent to make([]Slot[K,V], n).
-	AllocSlots(n int) []Slot[K, V]
+	// Alloc should return slices equivalent to make([]uint8, ctrls) and
+	// make([]Slot[K,V], slots)
+	Alloc(ctrls, slots int) ([]uint8, []Slot[K, V])
 
-	// AllocControls should return a slice equivalent to make([]uint8, n).
-	AllocControls(n int) []uint8
-
-	// FreeSlots can optional release the memory associated with the supplied
-	// slice that is guaranteed to have been allocated by AllocSlots.
-	FreeSlots(v []Slot[K, V])
-
-	// FreeControls can optional release the memory associated with the
-	// supplied slice that is guaranteed to have been allocated by
-	// AllocControls.
-	FreeControls(v []uint8)
+	// Free can optional release the memory associated with the supplied
+	// slices that is guaranteed to have been allocated by Alloc.
+	Free(ctrls []uint8, slots []Slot[K, V])
 }
 
 type defaultAllocator[K comparable, V any] struct{}
 
-func (defaultAllocator[K, V]) AllocSlots(n int) []Slot[K, V] {
-	return make([]Slot[K, V], n)
+func (defaultAllocator[K, V]) Alloc(ctrls, slots int) ([]uint8, []Slot[K, V]) {
+	return make([]uint8, ctrls), make([]Slot[K, V], slots)
 }
 
-func (defaultAllocator[K, V]) AllocControls(n int) []uint8 {
-	return make([]uint8, n)
-}
-
-func (defaultAllocator[K, V]) FreeSlots(v []Slot[K, V]) {
-}
-
-func (defaultAllocator[K, V]) FreeControls(v []uint8) {
+func (defaultAllocator[K, V]) Free(_ []uint8, _ []Slot[K, V]) {
 }
 
 type allocatorOption[K comparable, V any] struct {
@@ -97,7 +83,48 @@ func (op allocatorOption[K, V]) apply(m *Map[K, V]) {
 	m.allocator = op.allocator
 }
 
-// WithAllocator is an option for specify the Allocator to use for a Map[K,V].
+// WithAllocator is an option for specifying the Allocator to use for a Map[K,V].
 func WithAllocator[K comparable, V any](allocator Allocator[K, V]) option[K, V] {
 	return allocatorOption[K, V]{allocator}
+}
+
+type bucketAlloc7[K comparable, V any] struct {
+	ctrls [7 + groupSize]uint8
+	slots [7]Slot[K, V]
+}
+
+type bucketAlloc15[K comparable, V any] struct {
+	ctrls [15 + groupSize]uint8
+	slots [15]Slot[K, V]
+}
+
+type bucketAlloc31[K comparable, V any] struct {
+	ctrls [31 + groupSize]uint8
+	slots [31]Slot[K, V]
+}
+
+type smallAllocator[K comparable, V any] struct{}
+
+func (smallAllocator[K, V]) Alloc(ctrls, slots int) ([]uint8, []Slot[K, V]) {
+	switch slots {
+	case 7:
+		a := &bucketAlloc7[K, V]{}
+		return a.ctrls[:ctrls], a.slots[:slots]
+	case 15:
+		a := &bucketAlloc15[K, V]{}
+		return a.ctrls[:ctrls], a.slots[:slots]
+	case 31:
+		a := &bucketAlloc31[K, V]{}
+		return a.ctrls[:ctrls], a.slots[:slots]
+	}
+	return make([]uint8, ctrls), make([]Slot[K, V], slots)
+}
+
+func (smallAllocator[K, V]) Free(_ []uint8, _ []Slot[K, V]) {
+}
+
+// WithSmallAllocator is an option that specifies usage of an allocator
+// optimized for small maps (< 28 elements) which reduces allocations.
+func WithSmallAllocator[K comparable, V any]() option[K, V] {
+	return allocatorOption[K, V]{smallAllocator[K, V]{}}
 }
