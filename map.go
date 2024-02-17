@@ -373,6 +373,8 @@ func (m *Map[K, V]) Put(key K, value V) {
 	// find routine for Get, Put, and Delete, we have to manually inline the
 	// find routine for performance.
 	seq := makeProbeSeq(h1(h), b.capacity)
+	startOffset := seq.offset
+
 	for ; ; seq = seq.next() {
 		g := b.ctrls.GroupAt(seq.offset)
 		match := g.matchH2(h2(h))
@@ -391,19 +393,67 @@ func (m *Map[K, V]) Put(key K, value V) {
 
 		match = g.matchEmpty()
 		if match != 0 {
-			// Before performing the insertion we may decide the bucket is
-			// getting overcrowded (i.e. the load factor is greater than 7/8
-			// for big tables; small tables use a max load factor of 1).
-			if b.growthLeft == 0 {
-				b.rehash(m)
-				// We may have split the bucket in which case we have to
-				// re-determine which bucket the key resides on. This
-				// determination is quick in comparison to rehashing,
-				// resizing, and splitting, so just always do it. Note that we
-				// don't have to restart the entire Put process as we know the
-				// key doesn't exist in the map.
-				b = m.bucket(h)
+			// Finding an empty slot means we've reached the end of the probe
+			// sequence.
+
+			// If there is room left to grow in the table and we're at the
+			// start of the probe sequence we can just insert the new entry.
+			if b.growthLeft > 0 && seq.offset == startOffset {
+				i := seq.offsetAt(match.first())
+				slot := b.slots.At(i)
+				slot.key = key
+				slot.value = value
+				b.setCtrl(i, ctrl(h2(h)))
+				b.growthLeft--
+				b.used++
+				m.used++
+				b.checkInvariants(m)
+				return
 			}
+
+			// Find the first empty or deleted slot in the key's probe
+			// sequence.
+			seq := makeProbeSeq(h1(h), b.capacity)
+			for ; ; seq = seq.next() {
+				g := b.ctrls.GroupAt(seq.offset)
+				match = g.matchEmptyOrDeleted()
+				if match != 0 {
+					i := seq.offsetAt(match.first())
+					// If there is room left to grow in the table or the slot
+					// is deleted (and thus we're overwriting it andnot
+					// changing growthLeft) we can insert the entry here.
+					// Otherwise we need to rehash the bucket.
+					if b.growthLeft > 0 || b.ctrls.Get(i) == ctrlDeleted {
+						slot := b.slots.At(i)
+						slot.key = key
+						slot.value = value
+						if b.ctrls.Get(i) == ctrlEmpty {
+							b.growthLeft--
+						}
+						b.setCtrl(i, ctrl(h2(h)))
+						b.used++
+						m.used++
+						b.checkInvariants(m)
+						return
+					}
+					break
+				}
+			}
+
+			if invariants && b.growthLeft != 0 {
+				panic(fmt.Sprintf("invariant failed: growthLeft is unexpectedly non-zero: %d", b.growthLeft))
+			}
+
+			b.rehash(m)
+
+			// We may have split the bucket in which case we have to
+			// re-determine which bucket the key resides on. This
+			// determination is quick in comparison to rehashing, resizing,
+			// and splitting, so just always do it.
+			b = m.bucket(h)
+
+			// Note that we don't have to restart the entire Put process as we
+			// know the key doesn't exist in the map.
 			b.uncheckedPut(h, key, value)
 			b.used++
 			m.used++
@@ -413,8 +463,8 @@ func (m *Map[K, V]) Put(key K, value V) {
 	}
 }
 
-// Get retrieves the value from the map for the specified key, return ok=false
-// if the key is not present.
+// Get retrieves the value from the map for the specified key, returning
+// ok=false if the key is not present.
 func (m *Map[K, V]) Get(key K) (value V, ok bool) {
 	h := m.hash(noescape(unsafe.Pointer(&key)), m.seed)
 	b := m.bucket(h)
