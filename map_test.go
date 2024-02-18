@@ -64,47 +64,44 @@ func TestLittleEndian(t *testing.T) {
 }
 
 func TestProbeSeq(t *testing.T) {
-	genSeq := func(n int, hash, mask uintptr) []uintptr {
+	genSeq := func(n int, hash uintptr, mask uint32) []uint32 {
 		seq := makeProbeSeq(hash, mask)
-		vals := make([]uintptr, n)
+		vals := make([]uint32, n)
 		for i := 0; i < n; i++ {
 			vals[i] = seq.offset
 			seq = seq.next()
 		}
 		return vals
 	}
-	genGroups := func(n int, start, count uintptr) []uintptr {
-		var vals []uintptr
-		for i := start % groupSize; i < count; i += groupSize {
+	genGroups := func(n uint32) []uint32 {
+		var vals []uint32
+		for i := uint32(0); i < n; i++ {
 			vals = append(vals, i)
 		}
-		sort.Slice(vals, func(i, j int) bool {
-			return vals[i] < vals[j]
-		})
 		return vals
 	}
 
 	// The Abseil probeSeq test cases.
-	expected := []uintptr{0, 8, 24, 48, 80, 120, 40, 96, 32, 104, 56, 16, 112, 88, 72, 64}
-	require.Equal(t, expected, genSeq(16, 0, 127))
-	require.Equal(t, expected, genSeq(16, 128, 127))
+	expected := []uint32{0, 1, 3, 6, 10, 15, 5, 12, 4, 13, 7, 2, 14, 11, 9, 8}
+	require.Equal(t, expected, genSeq(16, 0, 15))
+	require.Equal(t, expected, genSeq(16, 16, 15))
 
 	// Verify that we touch all of the groups no matter what our start offset
 	// within the group is.
-	for i := uintptr(0); i < 128; i++ {
-		vals := genSeq(16, i, 127)
+	for i := uintptr(0); i < 16; i++ {
+		vals := genSeq(16, i, 15)
 		require.Equal(t, 16, len(vals))
 		sort.Slice(vals, func(i, j int) bool {
 			return vals[i] < vals[j]
 		})
-		require.Equal(t, genGroups(16, i, 128), vals)
+		require.Equal(t, genGroups(16), vals)
 	}
 }
 
 func TestMatchH2(t *testing.T) {
 	ctrls := []ctrl{0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8}
 	for i := uintptr(1); i <= 8; i++ {
-		match := makeCtrlBytes(ctrls).GroupAt(0).matchH2(i)
+		match := unsafeCtrlGroup(ctrls).matchH2(i)
 		bit := match.first()
 		require.EqualValues(t, i-1, bit)
 	}
@@ -113,16 +110,16 @@ func TestMatchH2(t *testing.T) {
 func TestMatchEmpty(t *testing.T) {
 	testCases := []struct {
 		ctrls    []ctrl
-		expected []uintptr
+		expected []uint32
 	}{
 		{[]ctrl{0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8}, nil},
-		{[]ctrl{0x1, 0x2, 0x3, ctrlEmpty, 0x5, ctrlDeleted, 0x7, ctrlSentinel}, []uintptr{3}},
-		{[]ctrl{0x1, 0x2, 0x3, ctrlEmpty, 0x5, 0x6, ctrlEmpty, 0x8}, []uintptr{3, 6}},
+		{[]ctrl{0x1, 0x2, 0x3, ctrlEmpty, 0x5, ctrlDeleted, 0x7, ctrlSentinel}, []uint32{3}},
+		{[]ctrl{0x1, 0x2, 0x3, ctrlEmpty, 0x5, 0x6, ctrlEmpty, 0x8}, []uint32{3, 6}},
 	}
 	for _, c := range testCases {
 		t.Run("", func(t *testing.T) {
-			match := makeCtrlBytes(c.ctrls).GroupAt(0).matchEmpty()
-			var results []uintptr
+			match := unsafeCtrlGroup(c.ctrls).matchEmpty()
+			var results []uint32
 			for match != 0 {
 				idx := match.first()
 				results = append(results, idx)
@@ -136,15 +133,15 @@ func TestMatchEmpty(t *testing.T) {
 func TestMatchEmptyOrDeleted(t *testing.T) {
 	testCases := []struct {
 		ctrls    []ctrl
-		expected []uintptr
+		expected []uint32
 	}{
 		{[]ctrl{0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8}, nil},
-		{[]ctrl{0x1, 0x2, ctrlEmpty, ctrlDeleted, 0x5, 0x6, 0x7, ctrlSentinel}, []uintptr{2, 3}},
+		{[]ctrl{0x1, 0x2, ctrlEmpty, ctrlDeleted, 0x5, 0x6, 0x7, ctrlSentinel}, []uint32{2, 3}},
 	}
 	for _, c := range testCases {
 		t.Run("", func(t *testing.T) {
-			match := makeCtrlBytes(c.ctrls).GroupAt(0).matchEmptyOrDeleted()
-			var results []uintptr
+			match := unsafeCtrlGroup(c.ctrls).matchEmptyOrDeleted()
+			var results []uint32
 			for match != 0 {
 				idx := match.first()
 				results = append(results, idx)
@@ -176,29 +173,8 @@ func TestConvertNonFullToEmptyAndFullToDeleted(t *testing.T) {
 			}
 		}
 
-		makeCtrlBytes(ctrls).GroupAt(0).convertNonFullToEmptyAndFullToDeleted()
+		unsafeCtrlGroup(ctrls).convertNonFullToEmptyAndFullToDeleted()
 		require.EqualValues(t, expected, ctrls)
-	}
-}
-
-func TestAbsentAt(t *testing.T) {
-	testCases := []struct {
-		set   string
-		start uintptr
-		end   uintptr
-	}{
-		{set: "01001100", start: 1, end: 2},
-		{set: "11001000", start: 0, end: 3},
-		{set: "00001001", start: 4, end: 0},
-		{set: "10001001", start: 0, end: 0},
-		{set: "00000000", start: 8, end: 8},
-	}
-	for _, c := range testCases {
-		t.Run("", func(t *testing.T) {
-			b := bitsetFromString(t, c.set)
-			require.Equal(t, c.start, b.absentAtStart())
-			require.Equal(t, c.end, b.absentAtEnd())
-		})
 	}
 }
 
@@ -214,53 +190,10 @@ func bitsetFromString(t *testing.T, str string) bitset {
 	return b
 }
 
-func TestWasNeverFull(t *testing.T) {
-	b := &bucket[int, int]{
-		capacity: 15,
-		ctrls:    makeCtrlBytes(make([]ctrl, 16)),
-	}
-
-	testCases := []struct {
-		emptyIndexes []uintptr
-		expected     bool
-	}{
-		{[]uintptr{}, false},
-		{[]uintptr{0}, false},
-		{[]uintptr{0, 15}, true},
-		{[]uintptr{1, 15}, true},
-		{[]uintptr{2, 15}, true},
-		{[]uintptr{3, 15}, true},
-		{[]uintptr{4, 15}, true},
-		{[]uintptr{5, 15}, true},
-		{[]uintptr{6, 15}, true},
-		{[]uintptr{7, 15}, true},
-		{[]uintptr{8, 15}, false},
-		{[]uintptr{0, 14}, true},
-		{[]uintptr{0, 13}, true},
-		{[]uintptr{0, 12}, true},
-		{[]uintptr{0, 11}, true},
-		{[]uintptr{0, 10}, true},
-		{[]uintptr{0, 9}, true},
-		{[]uintptr{0, 8}, true},
-		{[]uintptr{0, 7}, false},
-	}
-	for _, c := range testCases {
-		t.Run("", func(t *testing.T) {
-			for i := uintptr(0); i < 16; i++ {
-				*b.ctrls.At(i) = 0
-			}
-			for _, i := range c.emptyIndexes {
-				*b.ctrls.At(i) = ctrlEmpty
-			}
-			require.Equal(t, c.expected, b.wasNeverFull(0))
-		})
-	}
-}
-
 func TestInitialCapacity(t *testing.T) {
 	testCases := []struct {
 		initialCapacity   int
-		maxBucketCapacity uintptr
+		maxBucketCapacity uint32
 		expectedCapacity  int
 		expectedBuckets   uintptr
 	}{
@@ -289,7 +222,7 @@ func TestBasic(t *testing.T) {
 
 		e := make(map[int]int)
 		require.EqualValues(t, 0, m.Len())
-		require.EqualValues(t, 0, m.bucket0.growthLeft)
+		require.EqualValues(t, 0, m.dir.At(0).growthLeft)
 
 		// Non-existent.
 		for i := 0; i < count; i++ {
@@ -389,7 +322,8 @@ func TestRandom(t *testing.T) {
 					require.EqualValues(t, e[k], v)
 				}
 			default: // 5% rehash in place and iterate
-				m.bucket0.rehashInPlace(m)
+				i := rand.Intn(int(m.bucketCount()))
+				m.dir.At(uintptr(i)).rehashInPlace(m)
 				require.Equal(t, e, m.toBuiltinMap())
 			}
 			require.EqualValues(t, len(e), m.Len())
@@ -433,7 +367,7 @@ func TestIterateMutate(t *testing.T) {
 	vals := make(map[int]int)
 	m.All(func(k, v int) bool {
 		if (k % 10) == 0 {
-			m.bucket0.resize(m, 2*m.bucket0.capacity+1)
+			m.dir.At(0).resize(m, 2*m.dir.At(0).capacity+1)
 		}
 		vals[k] = v
 		return true
@@ -444,9 +378,9 @@ func TestIterateMutate(t *testing.T) {
 func TestClear(t *testing.T) {
 	testCases := []struct {
 		count             int
-		maxBucketCapacity uintptr
+		maxBucketCapacity uint32
 	}{
-		{count: 1000, maxBucketCapacity: math.MaxUint64},
+		{count: 1000, maxBucketCapacity: math.MaxUint32},
 		{count: 1000, maxBucketCapacity: 7},
 	}
 	for _, c := range testCases {
@@ -474,19 +408,19 @@ type countingAllocator[K comparable, V any] struct {
 	free  int
 }
 
-func (a *countingAllocator[K, V]) Alloc(ctrls, slots int) ([]uint8, []Slot[K, V]) {
+func (a *countingAllocator[K, V]) Alloc(n int) []Group[K, V] {
 	a.alloc++
-	return make([]uint8, ctrls), make([]Slot[K, V], slots)
+	return make([]Group[K, V], n)
 }
 
-func (a *countingAllocator[K, V]) Free(_ []uint8, _ []Slot[K, V]) {
+func (a *countingAllocator[K, V]) Free(_ []Group[K, V]) {
 	a.free++
 }
 
 func TestAllocator(t *testing.T) {
 	a := &countingAllocator[int, int]{}
 	m := New[int, int](0, WithAllocator[int, int](a),
-		WithMaxBucketCapacity[int, int](math.MaxUint64))
+		WithMaxBucketCapacity[int, int](math.MaxUint32))
 
 	for i := 0; i < 100; i++ {
 		m.Put(i, i)
@@ -514,18 +448,18 @@ func TestResizeVsSplit(t *testing.T) {
 		m.Put(x, x)
 	}
 	start := time.Now()
-	m.bucket0.split(m)
+	m.dir.At(0).split(m)
 	if testing.Verbose() {
 		fmt.Printf(" split(%d): %6.3fms\n", count, time.Since(start).Seconds()*1000)
 	}
 
-	m = New[int, int](count, WithMaxBucketCapacity[int, int](math.MaxUint64))
+	m = New[int, int](count, WithMaxBucketCapacity[int, int](math.MaxUint32))
 	for i, x := 0, 0; i < count; i++ {
 		x += rand.Intn(128) + 1
 		m.Put(x, x)
 	}
 	start = time.Now()
-	m.bucket0.resize(m, 2*m.bucket0.capacity+1)
+	m.dir.At(0).resize(m, 2*m.dir.At(0).capacity+1)
 	if testing.Verbose() {
 		fmt.Printf("resize(%d): %6.3fms\n", count, time.Since(start).Seconds()*1000)
 	}
