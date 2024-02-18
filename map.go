@@ -268,6 +268,7 @@ type Map[K comparable, V any] struct {
 	// The maximum capacity a bucket is allowed to grow to before it will be
 	// split.
 	maxBucketCapacity uintptr
+	_                 noCopy
 }
 
 func normalizeCapacity(capacity uintptr) uintptr {
@@ -1616,3 +1617,16 @@ func (s unsafeSlice[T]) Slice(start, end uintptr) []T {
 func unsafeConvertSlice[Dest any, Src any](s []Src) []Dest {
 	return unsafe.Slice((*Dest)(unsafe.Pointer(unsafe.SliceData(s))), len(s))
 }
+
+// noCopy may be added to structs which must not be copied
+// after the first use.
+//
+// See https://golang.org/issues/8005#issuecomment-190753527
+// for details.
+//
+// Note that it must not be embedded, due to the Lock and Unlock methods.
+type noCopy struct{}
+
+// Lock is a no-op used by -copylocks checker from `go vet`.
+func (*noCopy) Lock()   {}
+func (*noCopy) Unlock() {}
