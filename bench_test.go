@@ -1,3 +1,17 @@
+// Copyright 2024 The Cockroach Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package swiss
 
 import (
@@ -111,7 +125,16 @@ func benchSizes[T benchTypes](
 		2048,
 		4096,
 		8192,
+		1 << 15,
 		1 << 16,
+		1 << 17,
+		1 << 18,
+		1 << 19,
+		1 << 20,
+		1 << 21,
+		1 << 22,
+		// 1 << 23,
+		// 1 << 24,
 	}
 
 	return func(b *testing.B) {
@@ -207,6 +230,17 @@ func benchmarkSwissMapGetMiss[T comparable](b *testing.B, n int, genKeys func(st
 	}
 	b.StopTimer()
 	fmt.Fprint(io.Discard, ok)
+
+	b.ReportMetric(float64(m.Len())/float64(m.capacity()), "load")
+
+	var fullGroups uint32
+	var groupsCount uint32
+	m.buckets(0, func(b *bucket[T, T]) bool {
+		fullGroups += b.fullGroups()
+		groupsCount += b.groupMask + 1
+		return true
+	})
+	b.ReportMetric(100*float64(fullGroups)/float64(groupsCount), "%full")
 }
 
 func benchmarkRuntimeMapGetHit[T benchTypes](
@@ -227,7 +261,7 @@ func benchmarkRuntimeMapGetHit[T benchTypes](
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = m[keys[i&(n-1)]]
+		_ = m[keys[i%n]]
 	}
 }
 
@@ -240,7 +274,7 @@ func benchmarkSwissMapGetHit[T benchTypes](b *testing.B, n int, genKeys func(sta
 	b.ResetTimer()
 	var ok bool
 	for i := 0; i < b.N; i++ {
-		_, ok = m.Get(keys[i&(n-1)])
+		_, ok = m.Get(keys[i%n])
 	}
 	b.StopTimer()
 	fmt.Fprint(io.Discard, ok)
@@ -261,11 +295,10 @@ func benchmarkRuntimeMapPutGrow[T benchTypes](
 
 func benchmarkSwissMapPutGrow[T benchTypes](b *testing.B, n int, genKeys func(start, end int) []T) {
 	var m Map[T, T]
-	options := []option[T, T]{WithSmallAllocator[T, T]()}
 	keys := genKeys(0, n)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.Init(0, options...)
+		m.Init(0)
 		for _, k := range keys {
 			m.Put(k, k)
 		}
@@ -289,11 +322,10 @@ func benchmarkSwissMapPutPreAllocate[T benchTypes](
 	b *testing.B, n int, genKeys func(start, end int) []T,
 ) {
 	var m Map[T, T]
-	options := []option[T, T]{WithSmallAllocator[T, T]()}
 	keys := genKeys(0, n)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.Init(n, options...)
+		m.Init(n)
 		for _, k := range keys {
 			m.Put(k, k)
 		}
