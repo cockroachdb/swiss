@@ -37,26 +37,29 @@
 // is apparently too high latency, but the generic version is still able to
 // compare 8 bytes at time through bit tricks (SWAR, SIMD Within A Register).
 //
-// A Swiss table's layout is N-1 slots where N is a power of 2 and N+groupSize
-// control bytes. The [N:N+groupSize] control bytes mirror the first groupSize
-// control bytes so that probe operations at the end of the control bytes
-// array do not have to perform additional checks. The control byte for slot N
-// is always a sentinel which is considered empty for the purposes of probing
-// but is not available for storing an entry and is also not a deletion
-// tombstone.
+// Google's Swiss Tables layout is N-1 slots where N is a power of 2 and
+// N+groupSize control bytes. The [N:N+groupSize] control bytes mirror the
+// first groupSize control bytes so that probe operations at the end of the
+// control bytes array do not have to perform additional checks. The control
+// byte for slot N is always a sentinel which is considered empty for the
+// purposes of probing but is not available for storing an entry and is also
+// not a deletion tombstone. The separation of control bytes and slots implies
+// 2 cache misses for a large map (larger than L2 cache size) or a cold map.
+// The swiss.Map implementation differs from Google's layout: it groups
+// together 8 control bytes and 8 slots which often results in 1 cache miss
+// for a large or cold map rather than separate accesses for the controls and
+// slots. The mirrored control bytes are no longer needed and and groups no
+// longer start at arbitrary slot index, but only at those that are multiples
+// of 8.
 //
 // Probing is done by taking the top 57 bits of hash(key)%N as the index into
-// the control bytes and then performing a check of the groupSize control
-// bytes at that index. Note that these groups are not aligned on a groupSize
-// boundary (i.e. groups are conceptual, not physical, and they overlap) and
-// an unaligned memory access is performed. According to
-// https://lemire.me/blog/2012/05/31/data-alignment-for-speed-myth-or-reality/,
-// data alignment for performance is a myth on modern CPUs. Probing walks
-// through groups in the table using quadratic probing until it finds a group
-// that has at least one empty slot or the sentinel control byte. See the
-// comments on probeSeq for more details on the order in which groups are
-// probed and the guarantee that every group is examined which means that in
-// the worst case probing will end when the sentinel is encountered.
+// the groups slice and then performing a check of the groupSize control bytes
+// within the group. Probing walks through groups in the table using quadratic
+// probing until it finds a group that has at least one empty slot or the
+// sentinel control byte. See the comments on probeSeq for more details on the
+// order in which groups are probed and the guarantee that every group is
+// examined which means that in the worst case probing will end when the
+// sentinel is encountered.
 //
 // Deletion is performed using tombstones (ctrlDeleted) with an optimization
 // to mark a slot as empty if we can prove that doing so would not violate the
@@ -147,6 +150,18 @@
 // configuring a very large bucket size threshold via the
 // WithMaxBucketCapacity option.
 //
+// In order to avoid a level of indirection when accessing a bucket, the
+// bucket directory points to buckets by value rather than by pointer.
+// Adjacent bucket[K,V]'s which share are logically the same bucket share the
+// bucket.groups slice and have the same values for
+// bucket.{groupMask,localDepth,index}. The other fields of a bucket are only
+// valid for buckets where &m.dir[bucket.index] = &bucket (i.e. the first
+// bucket in the directory with the specified index). During Get operations,
+// any of the buckets with the same index may be used for retrieval. During
+// Put and Delete operations an additional indirection is performed, though
+// the common case is that this indirection is within the same cache line as
+// it is to the immediately preceding bucket in the directory.
+//
 // # Implementation
 //
 // The implementation follows Google's Abseil implementation of Swiss Tables,
@@ -169,6 +184,7 @@ package swiss
 import (
 	"fmt"
 	"io"
+	"math"
 	"math/bits"
 	"strings"
 	"unsafe"
@@ -187,52 +203,68 @@ const (
 	bitsetEmpty   = bitsetLSB * uint64(ctrlEmpty)
 	bitsetDeleted = bitsetLSB * uint64(ctrlDeleted)
 
-	minBucketCapacity        uintptr = 7
-	defaultMaxBucketCapacity uintptr = 4095
+	minBucketCapacity        uint32 = 7
+	defaultMaxBucketCapacity uint32 = 4095
 )
 
-// Slot holds a key and value.
-type Slot[K comparable, V any] struct {
+func init() {
+	if unsafe.Sizeof(bucket[int, int]{}) != 32 {
+		panic("bucket size is not 32 bytes")
+	}
+}
+
+// slot holds a key and value.
+type slot[K comparable, V any] struct {
 	key   K
 	value V
+}
+
+// Group holds groupSize control bytes and slots.
+type Group[K comparable, V any] struct {
+	ctrls ctrlGroup
+	slots slotGroup[K, V]
 }
 
 // bucket implements Google's Swiss Tables hash table design. A Map is
 // composed of 1 or more buckets that are addressed using extendible hashing.
 type bucket[K comparable, V any] struct {
-	// ctrls is capacity+groupSize in length. Ctrls[capacity] is always
-	// ctrlSentinel which is used to stop probe iteration. A copy of the first
-	// groupSize-1 elements of ctrls is mirrored into the remaining slots
-	// which is done so that a probe sequence which picks a value near the end
-	// of ctrls will have valid control bytes to look at.
-	//
-	// When the bucket is empty, ctrls points to emptyCtrls which will never
-	// be modified and is used to simplify the Put, Get, and Delete code which
-	// doesn't have to check for a nil ctrls.
-	ctrls ctrlBytes
-	// slots is capacity in length.
-	slots unsafeSlice[Slot[K, V]]
+	// groups is groupMask+1 in length and holds groupSize key/value slots and
+	// their control bytes.
+	groups unsafeSlice[Group[K, V]]
+	// groupMask is the number of groups minus 1 which is used to quickly
+	// compute i%N using a bitwise & operation. The groupMask only changes
+	// when a bucket is resized.
+	groupMask uint32
+
+	// Capacity, used, and growthLeft are only updated on mutation operations
+	// (Put, Delete). Read operations (Get) only access the groups and
+	// groupMask fields.
+
 	// The total number slots (always 2^N-1). The capacity is used as a mask
 	// to quickly compute i%N using a bitwise & operation.
-	capacity uintptr
+	capacity uint32
 	// The number of filled slots (i.e. the number of elements in the bucket).
-	used int
+	used uint32
 	// The number of slots we can still fill without needing to rehash.
 	//
 	// This is stored separately due to tombstones: we do not include
 	// tombstones in the growth capacity because we'd like to rehash when the
 	// table is filled with tombstones as otherwise probe sequences might get
 	// unacceptably long without triggering a rehash.
-	growthLeft int
+	growthLeft uint32
+
 	// localDepth is the number of high bits from hash(key) used to generate
 	// an index for the global directory to locate this bucket. If localDepth
-	// is 0 this bucket is Map.bucket0.
-	localDepth uint
-	// The index of the bucket within Map.dir. If localDepth < globalDepth
-	// then this is the index of the first entry in Map.dir which points to
-	// this bucket and the following 1<<(globalDepth-localDepth) entries will
-	// also point to this bucket.
-	index uintptr
+	// is 0 this bucket is Map.bucket0. LocalDepth is only updated when a
+	// bucket splits.
+	localDepth uint32
+	// The index of the bucket within Map.dir. The buckets in
+	// Map.dir[index:index+2^(globalDepth-localDepth)] all share the same
+	// groups (and are logically the same bucket). Only the bucket at
+	// Map.dir[index] can be used for mutation operations (Put, Delete). The
+	// other buckets can be used for Get operations. Index is only updated
+	// when a bucket splits or the directory grows.
+	index uint32
 }
 
 // Map is an unordered map from keys to values with Put, Get, Delete, and All
@@ -251,10 +283,12 @@ type Map[K comparable, V any] struct {
 	allocator Allocator[K, V]
 	// bucket0 is always present and inlined in the Map to avoid a pointer
 	// indirection during the common case that the map contains a single
-	// bucket.
+	// bucket. bucket0 is also used during split operations as a temporary
+	// bucket to split into before the bucket is installed in the directory.
 	bucket0 bucket[K, V]
-	// The directory of buckets.
-	dir unsafeSlice[*bucket[K, V]]
+	// The directory of buckets. See the comment on bucket.index for details
+	// on how the physical bucket values map to logical buckets.
+	dir unsafeSlice[bucket[K, V]]
 	// The number of filled slots across all buckets (i.e. the number of
 	// elements in the map).
 	used int
@@ -264,20 +298,20 @@ type Map[K comparable, V any] struct {
 	// Note that globalShift==(64-globalDepth). globalShift is used rather
 	// than globalDepth because the shifting is the more common operation than
 	// needing to compare globalDepth to a bucket's localDepth.
-	globalShift uint
+	globalShift uint32
 	// The maximum capacity a bucket is allowed to grow to before it will be
 	// split.
-	maxBucketCapacity uintptr
+	maxBucketCapacity uint32
 }
 
-func normalizeCapacity(capacity uintptr) uintptr {
-	return (uintptr(1) << bits.Len64(uint64(capacity)-1)) - 1
+func normalizeCapacity(capacity uint32) uint32 {
+	return (uint32(1) << bits.Len32(uint32(capacity)-1)) - 1
 }
 
 // New constructs a new Map with the specified initial capacity. If
 // initialCapacity is 0 the map will start out with zero capacity and will
 // grow on the first insert. The zero value for a Map is not usable.
-func New[K comparable, V any](initialCapacity int, options ...option[K, V]) *Map[K, V] {
+func New[K comparable, V any](initialCapacity int, options ...Option[K, V]) *Map[K, V] {
 	m := &Map[K, V]{}
 	m.Init(initialCapacity, options...)
 	return m
@@ -290,20 +324,25 @@ func New[K comparable, V any](initialCapacity int, options ...option[K, V]) *Map
 //
 // Init is intended for usage when a Map is embedded by value in another
 // structure.
-func (m *Map[K, V]) Init(initialCapacity int, options ...option[K, V]) {
-	// The ctrls for an empty map points to emptyCtrls which simplifies
-	// probing in Get, Put, and Delete. The emptyCtrls never match a probe
-	// operation, but because growthLeft == 0 if we try to insert we'll
-	// immediately rehash and grow.
+func (m *Map[K, V]) Init(initialCapacity int, options ...Option[K, V]) {
 	*m = Map[K, V]{
 		hash:      getRuntimeHasher[K](),
 		seed:      uintptr(fastrand64()),
 		allocator: defaultAllocator[K, V]{},
 		bucket0: bucket[K, V]{
-			ctrls: emptyCtrls,
+			// The groups slice for bucket0 in an empty map points to a single
+			// group where the controls are all marked as empty. This
+			// simplifies the logic for probing in Get, Put, and Delete. The
+			// empty controls will never match a probe operation, and if
+			// insertion is performed growthLeft==0 will trigger a resize of
+			// the bucket.
+			groups: makeUnsafeSlice(unsafeConvertSlice[Group[K, V]](emptyCtrls[:])),
 		},
 		maxBucketCapacity: defaultMaxBucketCapacity,
 	}
+
+	// Initialize the directory to point to bucket0.
+	m.dir = makeUnsafeSlice(unsafe.Slice(&m.bucket0, 1))
 
 	for _, op := range options {
 		op.apply(m)
@@ -320,28 +359,21 @@ func (m *Map[K, V]) Init(initialCapacity int, options ...option[K, V]) {
 		// capacity of a map is 7/8 of the number of slots, so we set the
 		// target capacity to initialCapacity*8/7.
 		targetCapacity := uintptr((initialCapacity * groupSize) / maxAvgGroupLoad)
-		if targetCapacity <= m.maxBucketCapacity {
+		if targetCapacity <= uintptr(m.maxBucketCapacity) {
 			// Normalize targetCapacity to the smallest value of the form 2^k-1.
-			m.bucket0.init(m, normalizeCapacity(targetCapacity))
+			m.bucket0.init(m, normalizeCapacity(uint32(targetCapacity)))
 		} else {
 			// If targetCapacity is larger than maxBucketCapacity we need to
 			// size the directory appropriately. We'll size each bucket to
 			// maxBucketCapacity and create enough buckets to hold
 			// initialCapacity.
-			nBuckets := (targetCapacity + m.maxBucketCapacity - 1) / m.maxBucketCapacity
-			globalDepth := uint(bits.Len64(uint64(nBuckets) - 1))
-			m.growDirectory(globalDepth)
+			nBuckets := (targetCapacity + uintptr(m.maxBucketCapacity) - 1) / uintptr(m.maxBucketCapacity)
+			globalDepth := uint32(bits.Len32(uint32(nBuckets) - 1))
+			m.growDirectory(globalDepth, 0 /* index */)
 
 			n := m.bucketCount()
-			buckets := make([]bucket[K, V], n)
-
-			*m.dir.At(0) = &m.bucket0
-			for i := uintptr(1); i < n; i++ {
-				*m.dir.At(i) = &buckets[i]
-			}
-
-			for i := uintptr(0); i < n; i++ {
-				b := *m.dir.At(i)
+			for i := uint32(0); i < n; i++ {
+				b := m.dir.At(uintptr(i))
 				b.init(m, m.maxBucketCapacity)
 				b.localDepth = globalDepth
 				b.index = i
@@ -379,31 +411,30 @@ func (m *Map[K, V]) Put(key K, value V) {
 	// inserts an entry known not to be in the table (violating this
 	// requirement will cause the table to behave erratically).
 	h := m.hash(noescape(unsafe.Pointer(&key)), m.seed)
-	b := m.bucket(h)
+	b := m.mutableBucket(h)
 
 	// NB: Unlike the abseil swiss table implementation which uses a common
 	// find routine for Get, Put, and Delete, we have to manually inline the
 	// find routine for performance.
-	seq := makeProbeSeq(h1(h), b.capacity)
+	seq := makeProbeSeq(h1(h), b.groupMask)
 	startOffset := seq.offset
 
 	for ; ; seq = seq.next() {
-		g := b.ctrls.GroupAt(seq.offset)
-		match := g.matchH2(h2(h))
+		g := b.groups.At(uintptr(seq.offset))
+		match := g.ctrls.matchH2(h2(h))
 
 		for match != 0 {
-			slotIdx := match.first()
-			i := seq.offsetAt(slotIdx)
-			slot := b.slots.At(i)
+			i := match.first()
+			slot := g.slots.At(i)
 			if key == slot.key {
 				slot.value = value
 				b.checkInvariants(m)
 				return
 			}
-			match = match.remove(slotIdx)
+			match = match.remove(i)
 		}
 
-		match = g.matchEmpty()
+		match = g.ctrls.matchEmpty()
 		if match != 0 {
 			// Finding an empty slot means we've reached the end of the probe
 			// sequence.
@@ -411,11 +442,11 @@ func (m *Map[K, V]) Put(key K, value V) {
 			// If there is room left to grow in the bucket and we're at the
 			// start of the probe sequence we can just insert the new entry.
 			if b.growthLeft > 0 && seq.offset == startOffset {
-				i := seq.offsetAt(match.first())
-				slot := b.slots.At(i)
+				i := match.first()
+				slot := g.slots.At(i)
 				slot.key = key
 				slot.value = value
-				b.setCtrl(i, ctrl(h2(h)))
+				g.ctrls.Set(i, ctrl(h2(h)))
 				b.growthLeft--
 				b.used++
 				m.used++
@@ -425,24 +456,24 @@ func (m *Map[K, V]) Put(key K, value V) {
 
 			// Find the first empty or deleted slot in the key's probe
 			// sequence.
-			seq := makeProbeSeq(h1(h), b.capacity)
+			seq := makeProbeSeq(h1(h), b.groupMask)
 			for ; ; seq = seq.next() {
-				g := b.ctrls.GroupAt(seq.offset)
-				match = g.matchEmptyOrDeleted()
+				g := b.groups.At(uintptr(seq.offset))
+				match = g.ctrls.matchEmptyOrDeleted()
 				if match != 0 {
-					i := seq.offsetAt(match.first())
+					i := match.first()
 					// If there is room left to grow in the table or the slot
 					// is deleted (and thus we're overwriting it and not
 					// changing growthLeft) we can insert the entry here.
 					// Otherwise we need to rehash the bucket.
-					if b.growthLeft > 0 || b.ctrls.Get(i) == ctrlDeleted {
-						slot := b.slots.At(i)
+					if b.growthLeft > 0 || g.ctrls.Get(i) == ctrlDeleted {
+						slot := g.slots.At(i)
 						slot.key = key
 						slot.value = value
-						if b.ctrls.Get(i) == ctrlEmpty {
+						if g.ctrls.Get(i) == ctrlEmpty {
 							b.growthLeft--
 						}
-						b.setCtrl(i, ctrl(h2(h)))
+						g.ctrls.Set(i, ctrl(h2(h)))
 						b.used++
 						m.used++
 						b.checkInvariants(m)
@@ -462,7 +493,7 @@ func (m *Map[K, V]) Put(key K, value V) {
 			// re-determine which bucket the key resides on. This
 			// determination is quick in comparison to rehashing, resizing,
 			// and splitting, so just always do it.
-			b = m.bucket(h)
+			b = m.mutableBucket(h)
 
 			// Note that we don't have to restart the entire Put process as we
 			// know the key doesn't exist in the map.
@@ -511,22 +542,21 @@ func (m *Map[K, V]) Get(key K) (value V, ok bool) {
 	// analysis indicate that even at high load factors, k is less than 32,
 	// meaning that the number of false positive comparisons we must perform is
 	// less than 1/8 per find.
-	seq := makeProbeSeq(h1(h), b.capacity)
+	seq := makeProbeSeq(h1(h), b.groupMask)
 	for ; ; seq = seq.next() {
-		g := b.ctrls.GroupAt(seq.offset)
-		match := g.matchH2(h2(h))
+		g := b.groups.At(uintptr(seq.offset))
+		match := g.ctrls.matchH2(h2(h))
 
 		for match != 0 {
-			slotIdx := match.first()
-			i := seq.offsetAt(slotIdx)
-			slot := b.slots.At(i)
+			i := match.first()
+			slot := g.slots.At(i)
 			if key == slot.key {
 				return slot.value, true
 			}
-			match = match.remove(slotIdx)
+			match = match.remove(i)
 		}
 
-		match = g.matchEmpty()
+		match = g.ctrls.matchEmpty()
 		if match != 0 {
 			return value, false
 		}
@@ -539,49 +569,43 @@ func (m *Map[K, V]) Delete(key K) {
 	// Delete is find composed with "deleted at": we perform find(key), and
 	// then delete at the resulting slot if found.
 	h := m.hash(noescape(unsafe.Pointer(&key)), m.seed)
-	b := m.bucket(h)
+	b := m.mutableBucket(h)
 
 	// NB: Unlike the abseil swiss table implementation which uses a common
 	// find routine for Get, Put, and Delete, we have to manually inline the
 	// find routine for performance.
-	seq := makeProbeSeq(h1(h), b.capacity)
+	seq := makeProbeSeq(h1(h), b.groupMask)
 	for ; ; seq = seq.next() {
-		g := b.ctrls.GroupAt(seq.offset)
-		match := g.matchH2(h2(h))
+		g := b.groups.At(uintptr(seq.offset))
+		match := g.ctrls.matchH2(h2(h))
 
 		for match != 0 {
-			slotIdx := match.first()
-			i := seq.offsetAt(slotIdx)
-			s := b.slots.At(i)
+			i := match.first()
+			s := g.slots.At(i)
 			if key == s.key {
 				b.used--
 				m.used--
-				*s = Slot[K, V]{}
+				*s = slot[K, V]{}
 
-				// Given an offset to delete we simply create a tombstone and
-				// destroy its contents and mark the ctrl as deleted. If we
-				// can prove that the slot would not appear in a probe
-				// sequence we can mark the slot as empty instead. We can
-				// prove this by checking to see if the slot is part of any
-				// group that could have been full (assuming we never create
-				// an empty slot in a group with no empties which this
-				// heuristic guarantees we never do). If the slot is always
-				// parts of groups that could never have been full then find
-				// would stop at this slot since we do not probe beyond groups
-				// with empties.
-				if b.wasNeverFull(i) {
-					b.setCtrl(i, ctrlEmpty)
+				// Only a full group can appear in the middle of a probe
+				// sequence (a group with at least one empty slot terminates
+				// probing). Once a group becomes full, it stays full until
+				// rehashing/resizing. So if the group isn't full now, we can
+				// simply remove the element. Otherwise, we create a tombstone
+				// to mark the slot as deleted.
+				if g.ctrls.matchEmpty() != 0 {
+					g.ctrls.Set(i, ctrlEmpty)
 					b.growthLeft++
 				} else {
-					b.setCtrl(i, ctrlDeleted)
+					g.ctrls.Set(i, ctrlDeleted)
 				}
 				b.checkInvariants(m)
 				return
 			}
-			match = match.remove(slotIdx)
+			match = match.remove(i)
 		}
 
-		match = g.matchEmpty()
+		match = g.ctrls.matchEmpty()
 		if match != 0 {
 			b.checkInvariants(m)
 			return
@@ -592,9 +616,12 @@ func (m *Map[K, V]) Delete(key K) {
 // Clear deletes all entries from the map resulting in an empty map.
 func (m *Map[K, V]) Clear() {
 	m.buckets(0, func(b *bucket[K, V]) bool {
-		for i := uintptr(0); i < b.capacity; i++ {
-			b.setCtrl(i, ctrlEmpty)
-			*b.slots.At(i) = Slot[K, V]{}
+		for i := uint32(0); i <= b.groupMask; i++ {
+			g := b.groups.At(uintptr(i))
+			for j := uint32(0); j < groupSize; j++ {
+				g.ctrls.Set(j, ctrlEmpty)
+				*g.slots.At(j) = slot[K, V]{}
+			}
 		}
 
 		b.used = 0
@@ -634,17 +661,20 @@ func (m *Map[K, V]) All(yield func(key K, value V) bool) {
 
 		// Snapshot the capacity, controls, and slots so that iteration remains
 		// valid if the map is resized during iteration.
-		capacity := b.capacity
-		ctrls := b.ctrls
-		slots := b.slots
+		groups := b.groups
+		groupMask := b.groupMask
 
-		for i := uintptr(0); i <= capacity; i++ {
-			// Match full entries which have a high-bit of zero.
-			j := (i + offset) & capacity
-			if (ctrls.Get(j) & ctrlEmpty) != ctrlEmpty {
-				s := slots.At(j)
-				if !yield(s.key, s.value) {
-					return false
+		offset32 := uint32(offset)
+		for i := uint32(0); i <= groupMask; i++ {
+			g := groups.At(uintptr((i + offset32) & groupMask))
+			for j := uint32(0); j < groupSize; j++ {
+				k := (j + offset32) & (groupSize - 1)
+				// Match full entries which have a high-bit of zero.
+				if (g.ctrls.Get(k) & ctrlEmpty) != ctrlEmpty {
+					slot := g.slots.At(k)
+					if !yield(slot.key, slot.value) {
+						return false
+					}
 				}
 			}
 		}
@@ -656,9 +686,9 @@ func (m *Map[K, V]) All(yield func(key K, value V) bool) {
 // formatting using the "%#v" format specifier.
 func (m *Map[K, V]) GoString() string {
 	var buf strings.Builder
-	fmt.Fprintf(&buf, "used=%d  global-depth=%d\n", m.used, m.globalDepth())
+	fmt.Fprintf(&buf, "used=%d  global-depth=%d  bucket-count=%d\n", m.used, m.globalDepth(), m.bucketCount())
 	m.buckets(0, func(b *bucket[K, V]) bool {
-		fmt.Fprintf(&buf, "bucket %d: local-depth=%d  ", b.index, b.localDepth)
+		fmt.Fprintf(&buf, "bucket %d (%p): local-depth=%d\n", b.index, b, b.localDepth)
 		b.goFormat(&buf)
 		return true
 	})
@@ -692,6 +722,18 @@ const (
 // bucket returns the bucket corresponding to hash value h.
 func (m *Map[K, V]) bucket(h uintptr) *bucket[K, V] {
 	// NB: It is faster to check for the single bucket case using a
+	// conditional than to index into the directory.
+	if m.globalShift == 0 {
+		return &m.bucket0
+	}
+	// When shifting by a variable amount the Go compiler inserts overflow
+	// checks that the shift is less than the maximum allowed (32 or 64).
+	// Masking the shift amount allows overflow checks to be elided.
+	return m.dir.At(h >> (m.globalShift & shiftMask))
+}
+
+func (m *Map[K, V]) mutableBucket(h uintptr) *bucket[K, V] {
+	// NB: It is faster to check for the single bucket case using a
 	// conditional than to to index into the directory.
 	if m.globalShift == 0 {
 		return &m.bucket0
@@ -699,25 +741,37 @@ func (m *Map[K, V]) bucket(h uintptr) *bucket[K, V] {
 	// When shifting by a variable amount the Go compiler inserts overflow
 	// checks that the shift is less than the maximum allowed (32 or 64).
 	// Masking the shift amount allows overflow checks to be elided.
-	return *m.dir.At(h >> (m.globalShift & shiftMask))
+	b := m.dir.At(h >> (m.globalShift & shiftMask))
+	// The mutable bucket is the one located at m.dir[b.index]. This will
+	// usually be either the current bucket b, or the immediately preceding
+	// bucket which is usually in the same cache line.
+	return m.dir.At(uintptr(b.index))
 }
 
 // buckets calls yield sequentially for each bucket in the map. If yield
 // returns false, iteration stops. Offset specifies the bucket to start
 // iteration at (used to randomize iteration order).
 func (m *Map[K, V]) buckets(offset uintptr, yield func(b *bucket[K, V]) bool) {
-	if m.globalShift == 0 {
-		yield(&m.bucket0)
-		return
-	}
+	b := m.dir.At(offset & uintptr(m.bucketCount()-1))
+	// We iterate over the first bucket in a logical group of buckets (i.e.
+	// buckets which share bucket.groups). The first bucket has the accurate
+	// bucket.used field and those are also the buckets that are stepped
+	// through using bucketStep().
+	b = m.dir.At(uintptr(b.index))
 
-	// Loop termination is handled by remembering the start bucket and exiting
-	// when it is reached again. Note that when a bucket is split the existing
-	// bucket always ends up earlier in the directory so we'll reach it before
-	// we reach any of the buckets that were split off.
-	startBucket := *m.dir.At(offset & (m.bucketCount() - 1))
-	for b := startBucket; ; {
+	// Loop termination is handled by remembering the start bucket index and
+	// exiting when it is reached again. Note that the startIndex needs to be
+	// adjusted to account for the directory growing during iteration (i.e.
+	// due to a mutation), so we remember the starting global depth as well in
+	// order to perform that adjustment. Whenever the directory grows by
+	// doubling, every existing bucket index will be doubled.
+	startIndex := b.index
+	startGlobalDepth := m.globalDepth()
+
+	for {
+		originalGlobalDepth := m.globalDepth()
 		originalLocalDepth := b.localDepth
+		originalIndex := b.index
 
 		if !yield(b) {
 			break
@@ -778,30 +832,28 @@ func (m *Map[K, V]) buckets(offset uintptr, yield func(b *bucket[K, V]) bool) {
 		//	| 111 |         |              |
 		//	+-----+---------+--------------+
 
-		i := (b.index + bucketStep(m.globalDepth(), originalLocalDepth)) & (m.bucketCount() - 1)
-		b = *m.dir.At(i)
-		if b == startBucket {
+		// After calling yield, b is no longer valid. We determine the next
+		// bucket to iterate over using the b.index we cached before calling
+		// yield and adjusting for any directory growth that happened during
+		// the yield call.
+		i := adjustBucketIndex(originalIndex, m.globalDepth(), originalGlobalDepth)
+		i += bucketStep(m.globalDepth(), originalLocalDepth)
+		i &= (m.bucketCount() - 1)
+
+		// Similar to the adjustment for b's index, we compute the starting
+		// bucket's new index accounting for directory growth.
+		adjustedStartIndex := adjustBucketIndex(startIndex, m.globalDepth(), startGlobalDepth)
+		if i == adjustedStartIndex {
 			break
 		}
-	}
-}
 
-// dirEntries calls yield sequentially for every entry in the directory. If
-// yield returns false, iteration stops.
-func (m *Map[K, V]) dirEntries(yield func(b *bucket[K, V]) bool) {
-	if m.globalShift == 0 {
-		yield(&m.bucket0)
-		return
-	}
-
-	for i, n := uintptr(0), m.bucketCount(); i < n; i++ {
-		yield(*m.dir.At(i))
+		b = m.dir.At(uintptr(i))
 	}
 }
 
 // globalDepth returns the number of bits from the top of the hash to use for
 // indexing in the buckets directory.
-func (m *Map[K, V]) globalDepth() uint {
+func (m *Map[K, V]) globalDepth() uint32 {
 	if m.globalShift == 0 {
 		return 0
 	}
@@ -809,66 +861,84 @@ func (m *Map[K, V]) globalDepth() uint {
 }
 
 // bucketCount returns the number of buckets in the buckets directory.
-func (m *Map[K, V]) bucketCount() uintptr {
-	return uintptr(1) << (m.globalDepth() & shiftMask)
+func (m *Map[K, V]) bucketCount() uint32 {
+	const shiftMask = 31
+	return uint32(1) << (m.globalDepth() & shiftMask)
 }
 
 // bucketStep is the number of buckets to step over in the buckets directory
 // to reach the next different bucket. A bucket occupies 1 or more contiguous
 // entries in the buckets directory specified by the range:
 //
-//	[b.index,b.index+bucketStep(m.globalDepth(), b.localDepth))
-func bucketStep(globalDepth, localDepth uint) uintptr {
-	return uintptr(1) << ((globalDepth - localDepth) & shiftMask)
+//	[b.index:b.index+bucketStep(m.globalDepth(), b.localDepth)]
+func bucketStep(globalDepth, localDepth uint32) uint32 {
+	const shiftMask = 31
+	return uint32(1) << ((globalDepth - localDepth) & shiftMask)
+}
+
+// adjustBucketIndex adjusts the index of a bucket to account for the growth
+// of the directory where index was captured at originalGlobalDepth and we're
+// computing where that index will reside in the directory at
+// currentGlobalDepth.
+func adjustBucketIndex(index, currentGlobalDepth, originalGlobalDepth uint32) uint32 {
+	return index * (1 << (currentGlobalDepth - originalGlobalDepth))
 }
 
 // installBucket installs a bucket into the buckets directory, overwriting
 // every index in the range of entries the bucket occupies.
 func (m *Map[K, V]) installBucket(b *bucket[K, V]) *bucket[K, V] {
-	if m.globalShift == 0 {
-		m.bucket0 = *b
-		return &m.bucket0
-	}
-
 	step := bucketStep(m.globalDepth(), b.localDepth)
-	for i := uintptr(0); i < step; i++ {
-		*m.dir.At(b.index + i) = b
+	for i := uint32(0); i < step; i++ {
+		*m.dir.At(uintptr(b.index + i)) = *b
 	}
-	return b
+	return m.dir.At(uintptr(b.index))
 }
 
-// growDirectory grows the directory slice to 1<<newGlobalDepth buckets.
-func (m *Map[K, V]) growDirectory(newGlobalDepth uint) {
+// growDirectory grows the directory slice to 1<<newGlobalDepth buckets. Grow
+// directory returns the new index location for the bucket specified by index.
+func (m *Map[K, V]) growDirectory(newGlobalDepth, index uint32) (newIndex uint32) {
 	if invariants && newGlobalDepth > 32 {
 		panic(fmt.Sprintf("invariant failed: expectedly large newGlobalDepth %d->%d",
 			m.globalDepth(), newGlobalDepth))
 	}
 
-	newDir := makeUnsafeSlice(make([]*bucket[K, V], 1<<newGlobalDepth))
+	newDir := makeUnsafeSlice(make([]bucket[K, V], 1<<newGlobalDepth))
 
 	// NB: It would be more natural to use Map.buckets() here, but that
 	// routine uses b.index during iteration which we're mutating in the loop
 	// below.
-	var last *bucket[K, V]
-	i := uintptr(0)
-	m.dirEntries(func(b *bucket[K, V]) bool {
-		if b == last {
-			return true
-		}
-		last = b
-		b.index = i
-		step := bucketStep(newGlobalDepth, b.localDepth)
-		for j := uintptr(0); j < step; j++ {
-			*newDir.At(i + j) = b
-		}
-		i += step
-		return true
-	})
 
+	lastIndex := uint32(math.MaxUint32)
+	setNewIndex := true
+	for i, j, n := uint32(0), uint32(0), m.bucketCount(); i < n; i++ {
+		b := m.dir.At(uintptr(i))
+		if b.index == lastIndex {
+			continue
+		}
+		lastIndex = b.index
+
+		if b.index == index && setNewIndex {
+			newIndex = j
+			setNewIndex = false
+		}
+		b.index = j
+		step := bucketStep(newGlobalDepth, b.localDepth)
+		for k := uint32(0); k < step; k++ {
+			*newDir.At(uintptr(j + k)) = *b
+		}
+		j += step
+	}
+
+	// Zero out bucket0 if we're growing from 1 bucket (which uses bucket0) to
+	// more than 1 bucket.
+	if m.globalShift == 0 {
+		m.bucket0 = bucket[K, V]{}
+	}
 	m.dir = newDir
 	m.globalShift = 64 - newGlobalDepth
 
 	m.checkInvariants()
+	return newIndex
 }
 
 // checkInvariants verifies the internal consistency of the map's structure,
@@ -878,15 +948,15 @@ func (m *Map[K, V]) growDirectory(newGlobalDepth uint) {
 func (m *Map[K, V]) checkInvariants() {
 	if invariants {
 		if m.globalShift == 0 {
-			if m.dir.ptr != nil {
-				panic("unexpectedly non-nil directory")
+			if m.dir.ptr != unsafe.Pointer(&m.bucket0) {
+				panic(fmt.Sprintf("directory (%p) does not point to bucket0 (%p)", m.dir.ptr, &m.bucket0))
 			}
 			if m.bucket0.localDepth != 0 {
 				panic(fmt.Sprintf("expected local-depth=0, but found %d", m.bucket0.localDepth))
 			}
 		} else {
-			i := uintptr(0)
-			m.dirEntries(func(b *bucket[K, V]) bool {
+			for i, n := uint32(0), m.bucketCount(); i < n; i++ {
+				b := m.dir.At(uintptr(i))
 				if b == nil {
 					panic(fmt.Sprintf("dir[%d]: nil bucket", i))
 				}
@@ -894,81 +964,30 @@ func (m *Map[K, V]) checkInvariants() {
 					panic(fmt.Sprintf("dir[%d]: local-depth=%d is greater than global-depth=%d",
 						i, b.localDepth, m.globalDepth()))
 				}
-				n := uintptr(1) << (m.globalDepth() - b.localDepth)
+				n := uint32(1) << (m.globalDepth() - b.localDepth)
 				if i < b.index || i >= b.index+n {
 					panic(fmt.Sprintf("dir[%d]: out of expected range [%d,%d)", i, b.index, b.index+n))
 				}
-				i++
-				return true
-			})
+			}
 		}
 	}
 }
 
 func (b *bucket[K, V]) close(allocator Allocator[K, V]) {
 	if b.capacity > 0 {
-		allocator.Free(unsafeConvertSlice[uint8](b.ctrls.Slice(0, b.capacity+groupSize)),
-			b.slots.Slice(0, b.capacity))
+		allocator.Free(b.groups.Slice(0, uintptr(b.groupMask+1)))
 		b.capacity = 0
 		b.used = 0
 	}
-	b.ctrls = makeCtrlBytes(nil)
-	b.slots = makeUnsafeSlice([]Slot[K, V](nil))
-}
-
-// setCtrl sets the control byte at index i, taking care to mirror the byte to
-// the end of the control bytes slice if i<groupSize.
-func (b *bucket[K, V]) setCtrl(i uintptr, v ctrl) {
-	*b.ctrls.At(i) = v
-	// Mirror the first groupSize control state to the end of the ctrls slice.
-	// We do this unconditionally which is faster than performing a comparison
-	// to do it only for the first groupSize slots. Note that the index will
-	// be the identity for slots in the range [groupSize,capacity).
-	*b.ctrls.At(((i - (groupSize - 1)) & b.capacity) + (groupSize - 1)) = v
+	b.groups = makeUnsafeSlice([]Group[K, V](nil))
+	b.groupMask = 0
 }
 
 // tombstones returns the number of deleted (tombstone) entries in the bucket.
 // A tombstone is a slot that has been deleted but is still considered
 // occupied so as not to violate the probing invariant.
-func (b *bucket[K, V]) tombstones() uintptr {
-	return (b.capacity*maxAvgGroupLoad)/groupSize - uintptr(b.used)
-}
-
-// wasNeverFull returns true if index i was never part a full group. This
-// check allows an optimization during deletion whereby a deleted slot can be
-// converted to empty rather than a tombstone. See the comment in Delete for
-// further explanation.
-func (b *bucket[K, V]) wasNeverFull(i uintptr) bool {
-	if b.capacity < groupSize {
-		// The map fits entirely in a single group so we will never probe
-		// beyond this group.
-		return true
-	}
-
-	indexBefore := (i - groupSize) & b.capacity
-	emptyAfter := b.ctrls.GroupAt(i).matchEmpty()
-	emptyBefore := b.ctrls.GroupAt(indexBefore).matchEmpty()
-
-	// We're looking at the control bytes on either side of i trying to determine
-	// if the control byte i ever overlapped with a group that was full:
-	//
-	//   xx xx xx xx xx xx xx xx  xx xx xx xx xx xx xx xx
-	//   ^                        ^
-	//   indexBefore              i
-	//
-	// We count how many consecutive non empties we have to the right of i
-	// (including i) and to the left of i (not including i). If the sum is >=
-	// groupSize then there is at least one probe window that might have seen a
-	// full group.
-	//
-	// The empty{Before,After} != 0 checks are a quick test to see if the group
-	// starting at indexBefore and i are completely full (TODO: are these quick
-	// checks worthwhile, they aren't necessary for correctness).
-	if emptyBefore != 0 && emptyAfter != 0 &&
-		emptyBefore.absentAtEnd()+emptyAfter.absentAtStart() < groupSize {
-		return true
-	}
-	return false
+func (b *bucket[K, V]) tombstones() uint32 {
+	return (b.capacity*maxAvgGroupLoad)/groupSize - b.used - b.growthLeft
 }
 
 // uncheckedPut inserts an entry known not to be in the table. Used by Put
@@ -983,19 +1002,19 @@ func (b *bucket[K, V]) uncheckedPut(h uintptr, key K, value V) {
 	// probeSeq, and use it to find the first group with an unoccupied (empty
 	// or deleted) slot. We place the key/value into the first such slot in
 	// the group and mark it as full with key's H2.
-	seq := makeProbeSeq(h1(h), b.capacity)
+	seq := makeProbeSeq(h1(h), b.groupMask)
 	for ; ; seq = seq.next() {
-		g := b.ctrls.GroupAt(seq.offset)
-		match := g.matchEmptyOrDeleted()
+		g := b.groups.At(uintptr(seq.offset))
+		match := g.ctrls.matchEmptyOrDeleted()
 		if match != 0 {
-			i := seq.offsetAt(match.first())
-			slot := b.slots.At(i)
+			i := match.first()
+			slot := g.slots.At(i)
 			slot.key = key
 			slot.value = value
-			if b.ctrls.Get(i) == ctrlEmpty {
+			if g.ctrls.Get(i) == ctrlEmpty {
 				b.growthLeft--
 			}
-			b.setCtrl(i, ctrl(h2(h)))
+			g.ctrls.Set(i, ctrl(h2(h)))
 			return
 		}
 	}
@@ -1032,21 +1051,22 @@ func (b *bucket[K, V]) rehash(m *Map[K, V]) {
 	b.resize(m, newCapacity)
 }
 
-func (b *bucket[K, V]) init(m *Map[K, V], newCapacity uintptr) {
+func (b *bucket[K, V]) init(m *Map[K, V], newCapacity uint32) {
 	if (1 + newCapacity) < groupSize {
 		newCapacity = groupSize - 1
 	}
 
-	ctrls, slots := m.allocator.Alloc(int(newCapacity+groupSize), int(newCapacity))
-	b.ctrls = makeCtrlBytes(unsafeConvertSlice[ctrl](ctrls))
-	b.slots = makeUnsafeSlice(slots)
-
-	for i := uintptr(0); i < newCapacity+groupSize; i++ {
-		*b.ctrls.At(i) = ctrlEmpty
-	}
-	*b.ctrls.At(newCapacity) = ctrlSentinel
-
 	b.capacity = newCapacity
+	b.groupMask = (b.capacity+groupSize-1)/groupSize - 1
+	b.groups = makeUnsafeSlice(m.allocator.Alloc(int(b.groupMask + 1)))
+
+	for i := uint32(0); i <= b.groupMask; i++ {
+		g := b.groups.At(uintptr(i))
+		for j := uint32(0); j < groupSize; j++ {
+			g.ctrls.Set(j, ctrlEmpty)
+		}
+	}
+	b.groups.At(uintptr(b.groupMask)).ctrls.Set(groupSize-1, ctrlSentinel)
 
 	b.resetGrowthLeft()
 }
@@ -1055,24 +1075,33 @@ func (b *bucket[K, V]) init(m *Map[K, V], newCapacity uintptr) {
 // uncheckedPutting each element of the table into the new array (we know that
 // no insertion here will Put an already-present value), and discard the old
 // backing array.
-func (b *bucket[K, V]) resize(m *Map[K, V], newCapacity uintptr) {
-	oldCtrls, oldSlots := b.ctrls, b.slots
+func (b *bucket[K, V]) resize(m *Map[K, V], newCapacity uint32) {
+	if invariants && b != m.dir.At(uintptr(b.index)) {
+		panic(fmt.Sprintf("invariant failed: attempt to resize bucket %p, but it is not at Map.dir[%d/%p]",
+			b, b.index, m.dir.At(uintptr(b.index))))
+	}
+
+	oldGroups := b.groups
+	oldGroupMask := b.groupMask
 	oldCapacity := b.capacity
 	b.init(m, newCapacity)
 
-	for i := uintptr(0); i < oldCapacity; i++ {
-		c := oldCtrls.Get(i)
-		if c == ctrlEmpty || c == ctrlDeleted {
-			continue
+	for i := uint32(0); i <= oldGroupMask; i++ {
+		g := oldGroups.At(uintptr(i))
+		for j := uint32(0); j < groupSize; j++ {
+			if (g.ctrls.Get(j) & ctrlEmpty) == ctrlEmpty {
+				continue
+			}
+			slot := g.slots.At(j)
+			h := m.hash(noescape(unsafe.Pointer(&slot.key)), m.seed)
+			b.uncheckedPut(h, slot.key, slot.value)
 		}
-		slot := oldSlots.At(i)
-		h := m.hash(noescape(unsafe.Pointer(&slot.key)), m.seed)
-		b.uncheckedPut(h, slot.key, slot.value)
 	}
 
+	b = m.installBucket(b)
+
 	if oldCapacity > 0 {
-		m.allocator.Free(unsafeConvertSlice[uint8](oldCtrls.Slice(0, oldCapacity+groupSize)),
-			oldSlots.Slice(0, oldCapacity))
+		m.allocator.Free(oldGroups.Slice(0, uintptr(oldGroupMask+1)))
 	}
 
 	b.checkInvariants(m)
@@ -1082,8 +1111,21 @@ func (b *bucket[K, V]) resize(m *Map[K, V], newCapacity uintptr) {
 // of the same size, and then installs the new bucket into the buckets
 // directory, growing the buckets directory if necessary.
 func (b *bucket[K, V]) split(m *Map[K, V]) {
-	// Create the new bucket as a clone of the bucket being split.
-	newb := &bucket[K, V]{
+	if invariants && b != m.dir.At(uintptr(b.index)) {
+		panic(fmt.Sprintf("invariant failed: attempt to split bucket %p, but it is not at Map.dir[%d/%p]",
+			b, b.index, m.dir.At(uintptr(b.index))))
+	}
+
+	// Create the new bucket as a clone of the bucket being split. If we're
+	// splitting bucket0 we need to allocate a *bucket[K, V] for scratch
+	// space. Otherwise we use bucket0 as the scratch space.
+	var newb *bucket[K, V]
+	if m.globalShift == 0 {
+		newb = &bucket[K, V]{}
+	} else {
+		newb = &m.bucket0
+	}
+	*newb = bucket[K, V]{
 		localDepth: b.localDepth,
 		index:      b.index,
 	}
@@ -1096,75 +1138,89 @@ func (b *bucket[K, V]) split(m *Map[K, V]) {
 	// staying earlier in the directory than newb after the directory is
 	// grown.
 	mask := uintptr(1) << (64 - (b.localDepth + 1))
-	for i := uintptr(0); i < b.capacity; i++ {
-		c := b.ctrls.Get(i)
-		if c == ctrlEmpty || c == ctrlDeleted {
-			continue
+	for i := uint32(0); i <= b.groupMask; i++ {
+		g := b.groups.At(uintptr(i))
+		for j := uint32(0); j < groupSize; j++ {
+			if (g.ctrls.Get(j) & ctrlEmpty) == ctrlEmpty {
+				continue
+			}
+
+			s := g.slots.At(j)
+			h := m.hash(noescape(unsafe.Pointer(&s.key)), m.seed)
+			if (h & mask) == 0 {
+				// Nothing to do, the record is staying in b.
+				continue
+			}
+
+			// Insert the record into newb.
+			newb.uncheckedPut(h, s.key, s.value)
+			newb.used++
+
+			// Delete the record from b.
+			if g.ctrls.matchEmpty() != 0 {
+				g.ctrls.Set(j, ctrlEmpty)
+				b.growthLeft++
+			} else {
+				g.ctrls.Set(j, ctrlDeleted)
+			}
+
+			*s = slot[K, V]{}
+			b.used--
 		}
-
-		slot := b.slots.At(i)
-		h := m.hash(noescape(unsafe.Pointer(&slot.key)), m.seed)
-		if (h & mask) == 0 {
-			// Nothing to do, the record is staying in b.
-			continue
-		}
-
-		// Insert the record into newb.
-		newb.uncheckedPut(h, slot.key, slot.value)
-		newb.used++
-
-		// Delete the record from b.
-		if b.wasNeverFull(i) {
-			b.setCtrl(i, ctrlEmpty)
-			b.growthLeft++
-		} else {
-			b.setCtrl(i, ctrlDeleted)
-		}
-
-		*slot = Slot[K, V]{}
-		b.used--
 	}
 
-	if uintptr(b.used) >= (b.capacity*maxAvgGroupLoad)/groupSize {
+	if b.used >= (b.capacity*maxAvgGroupLoad)/groupSize {
 		// We didn't move any records to the new bucket. Either
 		// maxBucketCapacity is too small and we got unlucky, or we have a
 		// degenerate hash function (e.g. one that returns a constant in the
 		// high bits).
 		m.maxBucketCapacity = 2*m.maxBucketCapacity + 1
+		newb.close(m.allocator)
+		*newb = bucket[K, V]{}
 		b.resize(m, 2*b.capacity+1)
 		return
 	}
 
-	if uintptr(newb.used) >= (newb.capacity*maxAvgGroupLoad)/groupSize || newb.growthLeft == 0 {
+	if newb.used >= (newb.capacity*maxAvgGroupLoad)/groupSize || newb.growthLeft == 0 {
 		// We moved all of the records to the new bucket (note the two
 		// conditions are equivalent and both are present merely for clarity).
 		// Similar to the above, bump maxBucketCapacity and resize the bucket
 		// rather than splitting. We'll replace the old bucket with the new
 		// bucket in the directory.
 		m.maxBucketCapacity = 2*m.maxBucketCapacity + 1
+		b.close(m.allocator)
 		newb = m.installBucket(newb)
 		m.checkInvariants()
 		newb.resize(m, 2*newb.capacity+1)
 		return
 	}
 
-	// We need to ensure the old which we evacuated records from has empty
-	// slots as we may be inserting into it.
-	if b.growthLeft == 0 {
-		b.rehashInPlace(m)
-	}
+	// We need to ensure bucket b, which we evacuated records from, has empty
+	// slots as we may be inserting into it. We also want to drop any
+	// tombstones that may have been left in bucket to ensure lookups for
+	// non-existent keys don't have to traverse long probe chains. With a good
+	// hash function, 50% of the entries in b should have been moved to newb,
+	// so we should be able to drop tombstones corresponding to ~50% of the
+	// entries.
+	b.rehashInPlace(m)
 
 	// Grow the directory if necessary.
 	if b.localDepth >= m.globalDepth() {
-		m.growDirectory(b.localDepth + 1)
+		// When the directory grows b will be invalidated. We pass in b's
+		// index so that growDirectory will return the new index it resides
+		// at.
+		i := m.growDirectory(b.localDepth+1, b.index)
+		b = m.dir.At(uintptr(i))
 	}
 
 	// Complete the split by incrementing the local depth for the 2 buckets
 	// and installing the new bucket in the directory.
 	b.localDepth++
-	newb.localDepth++
+	m.installBucket(b)
+	newb.localDepth = b.localDepth
 	newb.index = b.index + bucketStep(m.globalDepth(), b.localDepth)
 	m.installBucket(newb)
+	*newb = bucket[K, V]{}
 
 	if invariants {
 		m.checkInvariants()
@@ -1176,6 +1232,14 @@ func (b *bucket[K, V]) split(m *Map[K, V]) {
 }
 
 func (b *bucket[K, V]) rehashInPlace(m *Map[K, V]) {
+	if invariants && b != m.dir.At(uintptr(b.index)) {
+		panic(fmt.Sprintf("invariant failed: attempt to rehash bucket %p, but it is not at Map.dir[%d/%p]",
+			b, b.index, m.dir.At(uintptr(b.index))))
+	}
+	if b.capacity == 0 {
+		return
+	}
+
 	// We want to drop all of the deletes in place. We first walk over the
 	// control bytes and mark every DELETED slot as EMPTY and every FULL slot
 	// as DELETED. Marking the DELETED slots as EMPTY has effectively dropped
@@ -1183,15 +1247,11 @@ func (b *bucket[K, V]) rehashInPlace(m *Map[K, V]) {
 	// slots as DELETED gives us a marker to locate the previously FULL slots.
 
 	// Mark all DELETED slots as EMPTY and all FULL slots as DELETED.
-	for i := uintptr(0); i < b.capacity; i += groupSize {
-		b.ctrls.GroupAt(i).convertNonFullToEmptyAndFullToDeleted()
+	for i := uint32(0); i <= b.groupMask; i++ {
+		b.groups.At(uintptr(i)).ctrls.convertNonFullToEmptyAndFullToDeleted()
 	}
-
-	// Fixup the cloned control bytes and the sentinel.
-	for i, n := uintptr(0), uintptr(groupSize-1); i < n; i++ {
-		*b.ctrls.At(((i - (groupSize - 1)) & b.capacity) + (groupSize - 1)) = *b.ctrls.At(i)
-	}
-	*b.ctrls.At(b.capacity) = ctrlSentinel
+	// Fixup the sentinel.
+	b.groups.At(uintptr(b.groupMask)).ctrls.Set(groupSize-1, ctrlSentinel)
 
 	// Now we walk over all of the DELETED slots (a.k.a. the previously FULL
 	// slots). For each slot we find the first probe group we can place the
@@ -1200,63 +1260,60 @@ func (b *bucket[K, V]) rehashInPlace(m *Map[K, V]) {
 	// the range [0, i). We may move the element at i to the range [0, i) if
 	// that is where the first group with an empty slot in its probe chain
 	// resides, but we never set a slot in [0, i) to DELETED.
-	for i := uintptr(0); i < b.capacity; i++ {
-		if b.ctrls.Get(i) != ctrlDeleted {
-			continue
-		}
+	for i := uint32(0); i <= b.groupMask; i++ {
+		g := b.groups.At(uintptr(i))
+		for j := uint32(0); j < groupSize; j++ {
+			if g.ctrls.Get(j) != ctrlDeleted {
+				continue
+			}
 
-		s := b.slots.At(i)
-		h := m.hash(noescape(unsafe.Pointer(&s.key)), m.seed)
-		seq := makeProbeSeq(h1(h), b.capacity)
-		desired := seq
+			s := g.slots.At(j)
+			h := m.hash(noescape(unsafe.Pointer(&s.key)), m.seed)
+			seq := makeProbeSeq(h1(h), b.groupMask)
+			desiredOffset := seq.offset
 
-		probeIndex := func(pos uintptr) uintptr {
-			return ((pos - desired.offset) & b.capacity) / groupSize
-		}
+			var targetGroup *Group[K, V]
+			var target uint32
+			for ; ; seq = seq.next() {
+				targetGroup = b.groups.At(uintptr(seq.offset))
+				if match := targetGroup.ctrls.matchEmptyOrDeleted(); match != 0 {
+					target = match.first()
+					break
+				}
+			}
 
-		var target uintptr
-		for ; ; seq = seq.next() {
-			g := b.ctrls.GroupAt(seq.offset)
-			if match := g.matchEmptyOrDeleted(); match != 0 {
-				target = seq.offsetAt(match.first())
-				break
+			switch {
+			case i == desiredOffset:
+				// If the target index falls within the first probe group
+				// then we don't need to move the element as it already
+				// falls in the best probe position.
+				g.ctrls.Set(j, ctrl(h2(h)))
+
+			case targetGroup.ctrls.Get(target) == ctrlEmpty:
+				// The target slot is empty. Transfer the element to the
+				// empty slot and mark the slot at index i as empty.
+				targetGroup.ctrls.Set(target, ctrl(h2(h)))
+				*targetGroup.slots.At(target) = *s
+				*s = slot[K, V]{}
+				g.ctrls.Set(j, ctrlEmpty)
+
+			case targetGroup.ctrls.Get(target) == ctrlDeleted:
+				// The slot at target has an element (i.e. it was FULL).
+				// We're going to swap our current element with that
+				// element and then repeat processing of index i which now
+				// holds the element which was at target.
+				targetGroup.ctrls.Set(target, ctrl(h2(h)))
+				t := targetGroup.slots.At(target)
+				*s, *t = *t, *s
+				// Repeat processing of the j'th slot which now holds a
+				// new key/value.
+				j--
+
+			default:
+				panic(fmt.Sprintf("ctrl at position %d (%02x) should be empty or deleted",
+					target, targetGroup.ctrls.Get(target)))
 			}
 		}
-
-		if i == target || probeIndex(i) == probeIndex(target) {
-			// If the target index falls within the first probe group
-			// then we don't need to move the element as it already
-			// falls in the best probe position.
-			b.setCtrl(i, ctrl(h2(h)))
-			continue
-		}
-
-		if b.ctrls.Get(target) == ctrlEmpty {
-			// The target slot is empty. Transfer the element to the
-			// empty slot and mark the slot at index i as empty.
-			b.setCtrl(target, ctrl(h2(h)))
-			*b.slots.At(target) = *b.slots.At(i)
-			*b.slots.At(i) = Slot[K, V]{}
-			b.setCtrl(i, ctrlEmpty)
-			continue
-		}
-
-		if b.ctrls.Get(target) == ctrlDeleted {
-			// The slot at target has an element (i.e. it was FULL).
-			// We're going to swap our current element with that
-			// element and then repeat processing of index i which now
-			// holds the element which was at target.
-			b.setCtrl(target, ctrl(h2(h)))
-			t := b.slots.At(target)
-			*s, *t = *t, *s
-			// Repeat processing of the i'th slot which now holds a
-			// new key/value.
-			i--
-			continue
-		}
-
-		panic(fmt.Sprintf("ctrl at position %d (%02x) should be empty or deleted",
-			target, b.ctrls.Get(target)))
 	}
 
 	b.resetGrowthLeft()
@@ -1266,59 +1323,72 @@ func (b *bucket[K, V]) rehashInPlace(m *Map[K, V]) {
 }
 
 func (b *bucket[K, V]) resetGrowthLeft() {
+	var growthLeft int
 	if b.capacity < groupSize {
 		// If the map fits in a single group then we're able to fill all of
 		// the slots except 1 (an empty slot is needed to terminate find
 		// operations).
-		b.growthLeft = int(b.capacity - 1)
+		growthLeft = int(b.capacity - 1)
 	} else {
-		b.growthLeft = int((b.capacity * maxAvgGroupLoad) / groupSize)
+		growthLeft = int((b.capacity * maxAvgGroupLoad) / groupSize)
 	}
-	if b.growthLeft < 0 {
-		b.growthLeft = 0
+	if growthLeft < 0 {
+		growthLeft = 0
 	}
+	b.growthLeft = uint32(growthLeft)
+}
+
+// TODO(peter): Should this be removed? It was useful for debugging a
+// performance problem with BenchmarkGetMiss.
+func (b *bucket[K, V]) fullGroups() uint32 {
+	var full uint32
+	for i := uint32(0); i <= b.groupMask; i++ {
+		g := b.groups.At(uintptr(i))
+		if g.ctrls.matchEmpty() == 0 {
+			full++
+		}
+	}
+	return full
 }
 
 func (b *bucket[K, V]) checkInvariants(m *Map[K, V]) {
 	if invariants {
 		if b.capacity > 0 {
-			// Verify the cloned control bytes are good.
-			for i, n := uintptr(0), uintptr(groupSize-1); i < n; i++ {
-				j := ((i - (groupSize - 1)) & b.capacity) + (groupSize - 1)
-				ci := b.ctrls.Get(i)
-				cj := b.ctrls.Get(j)
-				if ci != cj {
-					panic(fmt.Sprintf("invariant failed: ctrl(%d)=%02x != ctrl(%d)=%02x\n%#v", i, ci, j, cj, b))
-				}
-			}
 			// Verify the sentinel is good.
-			if c := b.ctrls.Get(b.capacity); c != ctrlSentinel {
-				panic(fmt.Sprintf("invariant failed: ctrl(%d): expected sentinel, but found %02x\n%#v", b.capacity, c, b))
+			if c := b.groups.At(uintptr(b.groupMask)).ctrls.Get(groupSize - 1); c != ctrlSentinel {
+				panic(fmt.Sprintf("invariant failed: ctrl(%d/%d): expected sentinel, but found %02x\n%#v",
+					b.groupMask, groupSize-1, c, b))
 			}
 		}
 
 		// For every non-empty slot, verify we can retrieve the key using Get.
 		// Count the number of used and deleted slots.
-		var used int
-		var deleted int
-		var empty int
-		for i := uintptr(0); i < b.capacity; i++ {
-			c := b.ctrls.Get(i)
-			switch {
-			case c == ctrlDeleted:
-				deleted++
-			case c == ctrlEmpty:
-				empty++
-			case c == ctrlSentinel:
-				panic(fmt.Sprintf("invariant failed: ctrl(%d): unexpected sentinel", i))
-			default:
-				s := b.slots.At(i)
-				if _, ok := m.Get(s.key); !ok {
-					h := m.hash(noescape(unsafe.Pointer(&s.key)), m.seed)
-					panic(fmt.Sprintf("invariant failed: slot(%d): %v not found [h2=%02x h1=%07x]\n%#v",
-						i, s.key, h2(h), h1(h), b))
+		var used uint32
+		var deleted uint32
+		var empty uint32
+		for i := uint32(0); i <= b.groupMask; i++ {
+			g := b.groups.At(uintptr(i))
+			for j := uint32(0); j < groupSize; j++ {
+				c := g.ctrls.Get(j)
+				switch {
+				case c == ctrlDeleted:
+					deleted++
+				case c == ctrlEmpty:
+					empty++
+				case c == ctrlSentinel:
+					if i == b.groupMask && j == groupSize-1 {
+						continue
+					}
+					panic(fmt.Sprintf("invariant failed: ctrl(%d/%d): unexpected sentinel", i, j))
+				default:
+					slot := g.slots.At(j)
+					if _, ok := m.Get(slot.key); !ok {
+						h := m.hash(noescape(unsafe.Pointer(&slot.key)), m.seed)
+						panic(fmt.Sprintf("invariant failed: slot(%d/%d): %v not found [h2=%02x h1=%07x]\n%#v",
+							i, j, slot.key, h2(h), h1(h), b))
+					}
+					used++
 				}
-				used++
 			}
 		}
 
@@ -1327,10 +1397,14 @@ func (b *bucket[K, V]) checkInvariants(m *Map[K, V]) {
 				used, b.used, b))
 		}
 
-		growthLeft := int((b.capacity*maxAvgGroupLoad)/groupSize-uintptr(b.used)) - deleted
+		growthLeft := (b.capacity*maxAvgGroupLoad)/groupSize - b.used - deleted
 		if growthLeft != b.growthLeft {
 			panic(fmt.Sprintf("invariant failed: found %d growthLeft, but expected %d\n%#v",
 				b.growthLeft, growthLeft, b))
+		}
+		if deleted != b.tombstones() {
+			panic(fmt.Sprintf("invariant failed: found %d tombstones, but expected %d\n%#v",
+				deleted, b.tombstones(), b))
 		}
 	}
 }
@@ -1345,17 +1419,21 @@ func (b *bucket[K, V]) GoString() string {
 
 func (b *bucket[K, V]) goFormat(w io.Writer) {
 	fmt.Fprintf(w, "capacity=%d  used=%d  growth-left=%d\n", b.capacity, b.used, b.growthLeft)
-	for i := uintptr(0); i < b.capacity+groupSize; i++ {
-		switch c := b.ctrls.Get(i); c {
-		case ctrlEmpty:
-			fmt.Fprintf(w, "  %4d: %02x [empty]\n", i, c)
-		case ctrlDeleted:
-			fmt.Fprintf(w, "  %4d: %02x [deleted]\n", i, c)
-		case ctrlSentinel:
-			fmt.Fprintf(w, "  %4d: %02x [sentinel]\n", i, c)
-		default:
-			s := b.slots.At(i & b.capacity)
-			fmt.Fprintf(w, "  %4d: %02x [%v:%v]\n", i, c, s.key, s.value)
+	for i := uint32(0); i <= b.groupMask; i++ {
+		g := b.groups.At(uintptr(i))
+		fmt.Fprintf(w, "  group %d\n", i)
+		for j := uint32(0); j < groupSize; j++ {
+			switch c := g.ctrls.Get(j); c {
+			case ctrlEmpty:
+				fmt.Fprintf(w, "    %d: %02x [empty]\n", j, c)
+			case ctrlDeleted:
+				fmt.Fprintf(w, "    %d: %02x [deleted]\n", j, c)
+			case ctrlSentinel:
+				fmt.Fprintf(w, "    %d: %02x [sentinel]\n", j, c)
+			default:
+				slot := g.slots.At(j)
+				fmt.Fprintf(w, "    %d: %02x [%v:%v]\n", j, c, slot.key, slot.value)
+			}
 		}
 	}
 }
@@ -1373,24 +1451,12 @@ type bitset uint64
 //
 // Returns 8 if the bitset is 0.
 // Returns groupSize if the bitset is empty.
-func (b bitset) first() uintptr {
-	return uintptr(bits.TrailingZeros64(uint64(b))) >> 3
-}
-
-// Returns the maximal number of contiguous slots at the beginning of the group
-// that are NOT in the set.
-func (b bitset) absentAtStart() uintptr {
-	return b.first()
-}
-
-// Returns the maximal number of contiguous slots at the end of the group that
-// are NOT in the set.
-func (b bitset) absentAtEnd() uintptr {
-	return uintptr(bits.LeadingZeros64(uint64(b))) >> 3
+func (b bitset) first() uint32 {
+	return uint32(bits.TrailingZeros64(uint64(b))) >> 3
 }
 
 // remove removes the slot with the given relative index.
-func (b bitset) remove(i uintptr) bitset {
+func (b bitset) remove(i uint32) bitset {
 	return b &^ (bitset(0x80) << (i << 3))
 }
 
@@ -1407,9 +1473,29 @@ func (b bitset) String() string {
 	return buf.String()
 }
 
-// ctrlGroup contains a group of 8 control bytes (in little-endian). Note that a
-// group can start at any control byte (not just those that are 8-byte aligned).
+// Each slot in the hash table has a control byte which can have one of four
+// states: empty, deleted, full and the sentinel. They have the following bit
+// patterns:
+//
+//	   empty: 1 0 0 0 0 0 0 0
+//	 deleted: 1 1 1 1 1 1 1 0
+//	    full: 0 h h h h h h h  // h represents the H1 hash bits
+//	sentinel: 1 1 1 1 1 1 1 1
+type ctrl uint8
+
+// ctrlGroup is a fixed size array of groupSize control bytes stored in a
+// uint64.
 type ctrlGroup uint64
+
+// Get returns the i-th control byte.
+func (g *ctrlGroup) Get(i uint32) ctrl {
+	return *(*ctrl)(unsafe.Add(unsafe.Pointer(g), i))
+}
+
+// Set sets the i-th control byte.
+func (g *ctrlGroup) Set(i uint32, c ctrl) {
+	*(*ctrl)(unsafe.Add(unsafe.Pointer(g), i)) = c
+}
 
 // matchH2 returns the set of slots which are full and for which the 7-bit hash
 // matches the given value. May return false positives.
@@ -1480,43 +1566,46 @@ func (g *ctrlGroup) convertNonFullToEmptyAndFullToDeleted() {
 	*g = ctrlGroup((^v + (v >> 7)) &^ bitsetLSB)
 }
 
-// Each slot in the hash table has a control byte which can have one of four
-// states: empty, deleted, full and the sentinel. They have the following bit
-// patterns:
+func (g *ctrlGroup) String() string {
+	var buf strings.Builder
+	buf.Grow(groupSize)
+
+	for i := uint32(0); i < groupSize; i++ {
+		fmt.Fprintf(&buf, "%02x ", g.Get(i))
+	}
+	return buf.String()
+}
+
+// slotGroup is a fixed size array of groupSize slots.
 //
-//	   empty: 1 0 0 0 0 0 0 0
-//	 deleted: 1 1 1 1 1 1 1 0
-//	    full: 0 h h h h h h h  // h represents the H1 hash bits
-//	sentinel: 1 1 1 1 1 1 1 1
-type ctrl uint8
-
-// ctrlBytes is the slice of control bytes.
-type ctrlBytes struct {
-	unsafeSlice[ctrl]
+// The keys and values are stored interleaved in slots with a memory layout
+// that looks like K/V/K/V/K/V/K/V.../K/V. An alternate layout would be have
+// parallel arrays of keys and values: K/K/K/K.../K/V/V/V/V.../V. The latter
+// has better space utilization if you have something like uint64 keys and
+// bool values, but it is measurably slower at large map sizes. Below shows
+// this perf hit with a Map[uint64,uint64]. The problem is due to the key and
+// value being stored in separate cache lines.
+//
+// MapGetHit/swissMap/Int64/262144-10    9.31ns ± 3%  10.04ns ± 3%   +7.81%  (p=0.008 n=5+5)
+// MapGetHit/swissMap/Int64/524288-10    16.7ns ± 1%   18.2ns ± 3%   +8.98%  (p=0.008 n=5+5)
+// MapGetHit/swissMap/Int64/1048576-10   24.7ns ± 2%   27.6ns ± 0%  +11.74%  (p=0.008 n=5+5)
+// MapGetHit/swissMap/Int64/2097152-10   33.3ns ± 1%   37.7ns ± 1%  +13.12%  (p=0.008 n=5+5)
+// MapGetHit/swissMap/Int64/4194304-10   36.6ns ± 0%   43.0ns ± 1%  +17.37%  (p=0.008 n=5+5)
+type slotGroup[K comparable, V any] struct {
+	slots [groupSize]slot[K, V]
 }
 
-func makeCtrlBytes(s []ctrl) ctrlBytes {
-	return ctrlBytes{unsafeSlice: makeUnsafeSlice(s)}
+func (g *slotGroup[K, V]) At(i uint32) *slot[K, V] {
+	return (*slot[K, V])(unsafe.Add(unsafe.Pointer(&g.slots[0]), uintptr(i)*unsafe.Sizeof(g.slots[0])))
 }
 
-// Get returns the i-th control byte.
-func (cb ctrlBytes) Get(i uintptr) ctrl {
-	return *(*ctrl)(unsafe.Add(cb.ptr, i))
-}
-
-// GroupAt returns a pointer to the group that starts at i. The ctrlGroup
-// contains the values of control bytes i through i+7. A group can start at any
-// index (it does not have to be 8-byte aligned).
-func (cb ctrlBytes) GroupAt(i uintptr) *ctrlGroup {
-	return (*ctrlGroup)(unsafe.Add(cb.ptr, i))
-}
-
-var emptyCtrls = func() ctrlBytes {
-	v := make([]ctrl, groupSize)
-	for i := range v {
+// emptyCtrls is a singleton for a single empty groupSize set of controls.
+var emptyCtrls = func() []ctrl {
+	var v [groupSize]ctrl
+	for i := uint32(0); i < groupSize; i++ {
 		v[i] = ctrlEmpty
 	}
-	return makeCtrlBytes(v)
+	return v[:]
 }()
 
 // probeSeq maintains the state for a probe sequence. The sequence is a
@@ -1540,27 +1629,23 @@ var emptyCtrls = func() ctrlBytes {
 // the number of groups is a power of two, since (i^2+i)/2 is a bijection in
 // Z/(2^m). See https://en.wikipedia.org/wiki/Quadratic_probing
 type probeSeq struct {
-	mask   uintptr
-	offset uintptr
-	index  uintptr
+	mask   uint32
+	offset uint32
+	index  uint32
 }
 
-func makeProbeSeq(hash, mask uintptr) probeSeq {
+func makeProbeSeq(hash uintptr, mask uint32) probeSeq {
 	return probeSeq{
 		mask:   mask,
-		offset: hash & mask,
+		offset: uint32(hash) & mask,
 		index:  0,
 	}
 }
 
 func (s probeSeq) next() probeSeq {
-	s.index += groupSize
+	s.index++
 	s.offset = (s.offset + s.index) & s.mask
 	return s
-}
-
-func (s probeSeq) offsetAt(i uintptr) uintptr {
-	return (s.offset + i) & s.mask
 }
 
 func (s probeSeq) String() string {
