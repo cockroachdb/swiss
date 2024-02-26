@@ -31,35 +31,32 @@
 // Swiss tables is the usage of a separate metadata array that stores 1 byte
 // per slot in the table. 7-bits of this "control byte" are taken from
 // hash(key) and the remaining bit is used to indicate whether the slot is
-// empty, full, deleted, or a sentinel. The metadata array allows quick
-// probes. The Google implementation of Swiss tables uses SIMD on x86 CPUs in
-// order to quickly check 16 slots at a time for a match. Neon on arm64 CPUs
-// is apparently too high latency, but the generic version is still able to
-// compare 8 bytes at time through bit tricks (SWAR, SIMD Within A Register).
+// empty, full, or deleted. The metadata array allows quick probes. The Google
+// implementation of Swiss tables uses SIMD on x86 CPUs in order to quickly
+// check 16 slots at a time for a match. Neon on arm64 CPUs is apparently too
+// high latency, but the generic version is still able to compare 8 bytes at
+// time through bit tricks (SWAR, SIMD Within A Register).
 //
 // Google's Swiss Tables layout is N-1 slots where N is a power of 2 and
 // N+groupSize control bytes. The [N:N+groupSize] control bytes mirror the
 // first groupSize control bytes so that probe operations at the end of the
-// control bytes array do not have to perform additional checks. The control
-// byte for slot N is always a sentinel which is considered empty for the
-// purposes of probing but is not available for storing an entry and is also
-// not a deletion tombstone. The separation of control bytes and slots implies
-// 2 cache misses for a large map (larger than L2 cache size) or a cold map.
-// The swiss.Map implementation differs from Google's layout: it groups
-// together 8 control bytes and 8 slots which often results in 1 cache miss
-// for a large or cold map rather than separate accesses for the controls and
-// slots. The mirrored control bytes are no longer needed and and groups no
-// longer start at arbitrary slot index, but only at those that are multiples
-// of 8.
+// control bytes array do not have to perform additional checks. The
+// separation of control bytes and slots implies 2 cache misses for a large
+// map (larger than L2 cache size) or a cold map. The swiss.Map implementation
+// differs from Google's layout: it groups together 8 control bytes and 8
+// slots which often results in 1 cache miss for a large or cold map rather
+// than separate accesses for the controls and slots. The mirrored control
+// bytes are no longer needed and and groups no longer start at arbitrary slot
+// index, but only at those that are multiples of 8.
 //
 // Probing is done by taking the top 57 bits of hash(key)%N as the index into
 // the groups slice and then performing a check of the groupSize control bytes
 // within the group. Probing walks through groups in the table using quadratic
-// probing until it finds a group that has at least one empty slot or the
-// sentinel control byte. See the comments on probeSeq for more details on the
-// order in which groups are probed and the guarantee that every group is
-// examined which means that in the worst case probing will end when the
-// sentinel is encountered.
+// probing until it finds a group that has at least one empty slot. See the
+// comments on probeSeq for more details on the order in which groups are
+// probed and the guarantee that every group is examined which means that in
+// the worst case probing will end when an empty slot is encountered (the map
+// can never be 100% full).
 //
 // Deletion is performed using tombstones (ctrlDeleted) with an optimization
 // to mark a slot as empty if we can prove that doing so would not violate the
@@ -194,9 +191,8 @@ const (
 	groupSize       = 8
 	maxAvgGroupLoad = 7
 
-	ctrlEmpty    ctrl = 0b10000000
-	ctrlDeleted  ctrl = 0b11111110
-	ctrlSentinel ctrl = 0b11111111
+	ctrlEmpty   ctrl = 0b10000000
+	ctrlDeleted ctrl = 0b11111110
 
 	bitsetLSB     = 0x0101010101010101
 	bitsetMSB     = 0x8080808080808080
@@ -242,6 +238,9 @@ type bucket[K comparable, V any] struct {
 
 	// The total number slots (always 2^N-1). The capacity is used as a mask
 	// to quickly compute i%N using a bitwise & operation.
+	//
+	// TODO(peter): Rename to slotMask. The total number of slots is now
+	// actually 2^N and we can use any slot so the capacity is 2^N not 2^N-1.
 	capacity uint32
 	// The number of filled slots (i.e. the number of elements in the bucket).
 	used uint32
@@ -668,6 +667,9 @@ func (m *Map[K, V]) All(yield func(key K, value V) bool) {
 		offset32 := uint32(offset)
 		for i := uint32(0); i <= groupMask; i++ {
 			g := groups.At(uintptr((i + offset32) & groupMask))
+			// TODO(peter): Skip over groups that are composed of only empty
+			// or deleted slots using matchEmptyOrDeleted() and counting the
+			// number of bits set.
 			for j := uint32(0); j < groupSize; j++ {
 				k := (j + offset32) & (groupSize - 1)
 				// Match full entries which have a high-bit of zero.
@@ -1067,7 +1069,6 @@ func (b *bucket[K, V]) init(m *Map[K, V], newCapacity uint32) {
 			g.ctrls.Set(j, ctrlEmpty)
 		}
 	}
-	b.groups.At(uintptr(b.groupMask)).ctrls.Set(groupSize-1, ctrlSentinel)
 
 	b.resetGrowthLeft()
 }
@@ -1251,8 +1252,6 @@ func (b *bucket[K, V]) rehashInPlace(m *Map[K, V]) {
 	for i := uint32(0); i <= b.groupMask; i++ {
 		b.groups.At(uintptr(i)).ctrls.convertNonFullToEmptyAndFullToDeleted()
 	}
-	// Fixup the sentinel.
-	b.groups.At(uintptr(b.groupMask)).ctrls.Set(groupSize-1, ctrlSentinel)
 
 	// Now we walk over all of the DELETED slots (a.k.a. the previously FULL
 	// slots). For each slot we find the first probe group we can place the
@@ -1354,14 +1353,6 @@ func (b *bucket[K, V]) fullGroups() uint32 {
 
 func (b *bucket[K, V]) checkInvariants(m *Map[K, V]) {
 	if invariants {
-		if b.capacity > 0 {
-			// Verify the sentinel is good.
-			if c := b.groups.At(uintptr(b.groupMask)).ctrls.Get(groupSize - 1); c != ctrlSentinel {
-				panic(fmt.Sprintf("invariant failed: ctrl(%d/%d): expected sentinel, but found %02x\n%#v",
-					b.groupMask, groupSize-1, c, b))
-			}
-		}
-
 		// For every non-empty slot, verify we can retrieve the key using Get.
 		// Count the number of used and deleted slots.
 		var used uint32
@@ -1376,11 +1367,6 @@ func (b *bucket[K, V]) checkInvariants(m *Map[K, V]) {
 					deleted++
 				case c == ctrlEmpty:
 					empty++
-				case c == ctrlSentinel:
-					if i == b.groupMask && j == groupSize-1 {
-						continue
-					}
-					panic(fmt.Sprintf("invariant failed: ctrl(%d/%d): unexpected sentinel", i, j))
 				default:
 					slot := g.slots.At(j)
 					if _, ok := m.Get(slot.key); !ok {
@@ -1407,6 +1393,10 @@ func (b *bucket[K, V]) checkInvariants(m *Map[K, V]) {
 			panic(fmt.Sprintf("invariant failed: found %d tombstones, but expected %d\n%#v",
 				deleted, b.tombstones(), b))
 		}
+
+		if empty == 0 {
+			panic(fmt.Sprintf("invariant failed: found no empty slots\n%#v", b))
+		}
 	}
 }
 
@@ -1429,8 +1419,6 @@ func (b *bucket[K, V]) goFormat(w io.Writer) {
 				fmt.Fprintf(w, "    %d: %02x [empty]\n", j, c)
 			case ctrlDeleted:
 				fmt.Fprintf(w, "    %d: %02x [deleted]\n", j, c)
-			case ctrlSentinel:
-				fmt.Fprintf(w, "    %d: %02x [sentinel]\n", j, c)
 			default:
 				slot := g.slots.At(j)
 				fmt.Fprintf(w, "    %d: %02x [%v:%v]\n", j, c, slot.key, slot.value)
@@ -1474,14 +1462,12 @@ func (b bitset) String() string {
 	return buf.String()
 }
 
-// Each slot in the hash table has a control byte which can have one of four
-// states: empty, deleted, full and the sentinel. They have the following bit
-// patterns:
+// Each slot in the hash table has a control byte which can have one of three
+// states: empty, deleted, and full. They have the following bit patterns:
 //
-//	   empty: 1 0 0 0 0 0 0 0
-//	 deleted: 1 1 1 1 1 1 1 0
-//	    full: 0 h h h h h h h  // h represents the H1 hash bits
-//	sentinel: 1 1 1 1 1 1 1 1
+//	  empty: 1 0 0 0 0 0 0 0
+//	deleted: 1 1 1 1 1 1 1 0
+//	   full: 0 h h h h h h h  // h represents the H1 hash bits
 type ctrl uint8
 
 // ctrlGroup is a fixed size array of groupSize control bytes stored in a
@@ -1507,21 +1493,20 @@ func (g *ctrlGroup) matchH2(h uintptr) bitset {
 	// subtract off 0x0101 the first 2 bytes we'll become 0xffff and both be
 	// considered matches of h. The false positive matches are not a problem,
 	// just a rare inefficiency. Note that they only occur if there is a real
-	// match and never occur on ctrlEmpty, ctrlDeleted, or ctrlSentinel. The
-	// subsequent key comparisons ensure that there is no correctness issue.
+	// match and never occur on ctrlEmpty, or ctrlDeleted. The subsequent key
+	// comparisons ensure that there is no correctness issue.
 	v := uint64(*g) ^ (bitsetLSB * uint64(h))
 	return bitset(((v - bitsetLSB) &^ v) & bitsetMSB)
 }
 
 // matchEmpty returns the set of slots in the group that are empty.
 func (g *ctrlGroup) matchEmpty() bitset {
-	// An empty slot is              1000 0000
-	// A deleted or sentinel slot is 1111 111?
-	// A full slot is                0??? ????
+	// An empty slot is   1000 0000
+	// A deleted slot is  1111 1110
+	// A full slot is     0??? ????
 	//
-	// A slot is empty iff bit 7 is set and bit 1 is not.
-	// We could select any of the other bits here (e.g. v << 1 would also
-	// work).
+	// A slot is empty iff bit 7 is set and bit 1 is not. We could select any
+	// of the other bits here (e.g. v << 1 would also work).
 	v := uint64(*g)
 	return bitset((v &^ (v << 6)) & bitsetMSB)
 }
@@ -1529,9 +1514,8 @@ func (g *ctrlGroup) matchEmpty() bitset {
 // matchEmptyOrDeleted returns the set of slots in the group that are empty or
 // deleted.
 func (g *ctrlGroup) matchEmptyOrDeleted() bitset {
-	// An empty slot is  1000 0000.
-	// A deleted slot is 1111 1110.
-	// The sentinel is   1111 1111.
+	// An empty slot is  1000 0000
+	// A deleted slot is 1111 1110
 	// A full slot is    0??? ????
 	//
 	// A slot is empty or deleted iff bit 7 is set and bit 0 is not.
@@ -1539,19 +1523,18 @@ func (g *ctrlGroup) matchEmptyOrDeleted() bitset {
 	return bitset((v &^ (v << 7)) & bitsetMSB)
 }
 
-// convertNonFullToEmptyAndFullToDeleted converts deleted or sentinel control
-// bytes in a group to empty control bytes, and control bytes indicating full
-// slots to deleted control bytes.
+// convertNonFullToEmptyAndFullToDeleted converts deleted control bytes in a
+// group to empty control bytes, and control bytes indicating full slots to
+// deleted control bytes.
 func (g *ctrlGroup) convertNonFullToEmptyAndFullToDeleted() {
 	// An empty slot is     1000 0000
 	// A deleted slot is    1111 1110
-	// The sentinel slot is 1111 1111
 	// A full slot is       0??? ????
 	//
 	// We select the MSB, invert, add 1 if the MSB was set and zero out the low
 	// bit.
 	//
-	//  - if the MSB was set (i.e. slot was empty, deleted, or sentinel):
+	//  - if the MSB was set (i.e. slot was empty, or deleted):
 	//     v:             1000 0000
 	//     ^v:            0111 1111
 	//     ^v + (v >> 7): 1000 0000
