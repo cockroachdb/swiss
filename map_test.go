@@ -130,7 +130,7 @@ func TestMatchEmpty(t *testing.T) {
 			for match != 0 {
 				idx := match.first()
 				results = append(results, idx)
-				match = match.remove(idx)
+				match = match.removeFirst()
 			}
 			require.Equal(t, c.expected, results)
 		})
@@ -152,7 +152,7 @@ func TestMatchEmptyOrDeleted(t *testing.T) {
 			for match != 0 {
 				idx := match.first()
 				results = append(results, idx)
-				match = match.remove(idx)
+				match = match.removeFirst()
 			}
 			require.Equal(t, c.expected, results)
 		})
