@@ -8,89 +8,89 @@ import (
 )
 
 func BenchmarkMapIter(b *testing.B) {
-	b.Run("runtimeMap", func(b *testing.B) {
-		b.Run("Int", benchSizes(benchmarkRuntimeMapIter[int64], genKeys[int64]))
+	b.Run("impl=runtimeMap", func(b *testing.B) {
+		b.Run("t=Int", benchSizes(benchmarkRuntimeMapIter[int64], genKeys[int64]))
 	})
-	b.Run("swissMap", func(b *testing.B) {
-		b.Run("Int", benchSizes(benchmarkSwissMapIter[int64], genKeys[int64]))
+	b.Run("impl=swissMap", func(b *testing.B) {
+		b.Run("t=Int", benchSizes(benchmarkSwissMapIter[int64], genKeys[int64]))
 	})
 }
 
 func BenchmarkMapGetHit(b *testing.B) {
-	b.Run("runtimeMap", func(b *testing.B) {
-		b.Run("Int64", benchSizes(benchmarkRuntimeMapGetHit[int64], genKeys[int64]))
-		b.Run("Int32", benchSizes(benchmarkRuntimeMapGetHit[int32], genKeys[int32]))
-		b.Run("String", benchSizes(benchmarkRuntimeMapGetHit[string], genKeys[string]))
+	b.Run("impl=runtimeMap", func(b *testing.B) {
+		b.Run("t=Int64", benchSizes(benchmarkRuntimeMapGetHit[int64], genKeys[int64]))
+		b.Run("t=Int32", benchSizes(benchmarkRuntimeMapGetHit[int32], genKeys[int32]))
+		b.Run("t=String", benchSizes(benchmarkRuntimeMapGetHit[string], genKeys[string]))
 	})
-	b.Run("swissMap", func(b *testing.B) {
-		b.Run("Int64", benchSizes(benchmarkSwissMapGetHit[int64], genKeys[int64]))
-		b.Run("Int32", benchSizes(benchmarkSwissMapGetHit[int32], genKeys[int32]))
-		b.Run("String", benchSizes(benchmarkSwissMapGetHit[string], genKeys[string]))
+	b.Run("impl=swissMap", func(b *testing.B) {
+		b.Run("t=Int64", benchSizes(benchmarkSwissMapGetHit[int64], genKeys[int64]))
+		b.Run("t=Int32", benchSizes(benchmarkSwissMapGetHit[int32], genKeys[int32]))
+		b.Run("t=String", benchSizes(benchmarkSwissMapGetHit[string], genKeys[string]))
 	})
 }
 
 func BenchmarkMapGetMiss(b *testing.B) {
-	b.Run("runtimeMap", func(b *testing.B) {
-		b.Run("Int64", benchSizes(benchmarkRuntimeMapGetMiss[int64], genKeys[int64]))
-		b.Run("Int32", benchSizes(benchmarkRuntimeMapGetMiss[int32], genKeys[int32]))
-		b.Run("String", benchSizes(benchmarkRuntimeMapGetMiss[string], genKeys[string]))
+	b.Run("impl=runtimeMap", func(b *testing.B) {
+		b.Run("t=Int64", benchSizes(benchmarkRuntimeMapGetMiss[int64], genKeys[int64]))
+		b.Run("t=Int32", benchSizes(benchmarkRuntimeMapGetMiss[int32], genKeys[int32]))
+		b.Run("t=String", benchSizes(benchmarkRuntimeMapGetMiss[string], genKeys[string]))
 	})
-	b.Run("swissMap", func(b *testing.B) {
-		b.Run("Int64", benchSizes(benchmarkSwissMapGetMiss[int64], genKeys[int64]))
-		b.Run("Int32", benchSizes(benchmarkSwissMapGetMiss[int32], genKeys[int32]))
-		b.Run("String", benchSizes(benchmarkSwissMapGetMiss[string], genKeys[string]))
+	b.Run("impl=swissMap", func(b *testing.B) {
+		b.Run("t=Int64", benchSizes(benchmarkSwissMapGetMiss[int64], genKeys[int64]))
+		b.Run("t=Int32", benchSizes(benchmarkSwissMapGetMiss[int32], genKeys[int32]))
+		b.Run("t=String", benchSizes(benchmarkSwissMapGetMiss[string], genKeys[string]))
 	})
 }
 
 func BenchmarkMapPutGrow(b *testing.B) {
-	b.Run("runtimeMap", func(b *testing.B) {
-		b.Run("Int64", benchSizes(benchmarkRuntimeMapPutGrow[int64], genKeys[int64]))
-		b.Run("Int32", benchSizes(benchmarkRuntimeMapPutGrow[int32], genKeys[int32]))
-		b.Run("String", benchSizes(benchmarkRuntimeMapPutGrow[string], genKeys[string]))
+	b.Run("impl=runtimeMap", func(b *testing.B) {
+		b.Run("t=Int64", benchSizes(benchmarkRuntimeMapPutGrow[int64], genKeys[int64]))
+		b.Run("t=Int32", benchSizes(benchmarkRuntimeMapPutGrow[int32], genKeys[int32]))
+		b.Run("t=String", benchSizes(benchmarkRuntimeMapPutGrow[string], genKeys[string]))
 	})
-	b.Run("swissMap", func(b *testing.B) {
-		b.Run("Int64", benchSizes(benchmarkSwissMapPutGrow[int64], genKeys[int64]))
-		b.Run("Int32", benchSizes(benchmarkSwissMapPutGrow[int32], genKeys[int32]))
-		b.Run("String", benchSizes(benchmarkSwissMapPutGrow[string], genKeys[string]))
+	b.Run("impl=swissMap", func(b *testing.B) {
+		b.Run("t=Int64", benchSizes(benchmarkSwissMapPutGrow[int64], genKeys[int64]))
+		b.Run("t=Int32", benchSizes(benchmarkSwissMapPutGrow[int32], genKeys[int32]))
+		b.Run("t=String", benchSizes(benchmarkSwissMapPutGrow[string], genKeys[string]))
 	})
 }
 
 func BenchmarkMapPutPreAllocate(b *testing.B) {
-	b.Run("runtimeMap", func(b *testing.B) {
-		b.Run("Int64", benchSizes(benchmarkRuntimeMapPutPreAllocate[int64], genKeys[int64]))
-		b.Run("Int32", benchSizes(benchmarkRuntimeMapPutPreAllocate[int32], genKeys[int32]))
-		b.Run("String", benchSizes(benchmarkRuntimeMapPutPreAllocate[string], genKeys[string]))
+	b.Run("impl=runtimeMap", func(b *testing.B) {
+		b.Run("t=Int64", benchSizes(benchmarkRuntimeMapPutPreAllocate[int64], genKeys[int64]))
+		b.Run("t=Int32", benchSizes(benchmarkRuntimeMapPutPreAllocate[int32], genKeys[int32]))
+		b.Run("t=String", benchSizes(benchmarkRuntimeMapPutPreAllocate[string], genKeys[string]))
 	})
-	b.Run("swissMap", func(b *testing.B) {
-		b.Run("Int64", benchSizes(benchmarkSwissMapPutPreAllocate[int64], genKeys[int64]))
-		b.Run("Int32", benchSizes(benchmarkSwissMapPutPreAllocate[int32], genKeys[int32]))
-		b.Run("String", benchSizes(benchmarkSwissMapPutPreAllocate[string], genKeys[string]))
+	b.Run("impl=swissMap", func(b *testing.B) {
+		b.Run("t=Int64", benchSizes(benchmarkSwissMapPutPreAllocate[int64], genKeys[int64]))
+		b.Run("t=Int32", benchSizes(benchmarkSwissMapPutPreAllocate[int32], genKeys[int32]))
+		b.Run("t=String", benchSizes(benchmarkSwissMapPutPreAllocate[string], genKeys[string]))
 	})
 }
 
 func BenchmarkMapPutReuse(b *testing.B) {
-	b.Run("runtimeMap", func(b *testing.B) {
-		b.Run("Int64", benchSizes(benchmarkRuntimeMapPutReuse[int64], genKeys[int64]))
-		b.Run("Int32", benchSizes(benchmarkRuntimeMapPutReuse[int32], genKeys[int32]))
-		b.Run("String", benchSizes(benchmarkRuntimeMapPutReuse[string], genKeys[string]))
+	b.Run("impl=runtimeMap", func(b *testing.B) {
+		b.Run("t=Int64", benchSizes(benchmarkRuntimeMapPutReuse[int64], genKeys[int64]))
+		b.Run("t=Int32", benchSizes(benchmarkRuntimeMapPutReuse[int32], genKeys[int32]))
+		b.Run("t=String", benchSizes(benchmarkRuntimeMapPutReuse[string], genKeys[string]))
 	})
-	b.Run("swissMap", func(b *testing.B) {
-		b.Run("Int64", benchSizes(benchmarkSwissMapPutReuse[int64], genKeys[int64]))
-		b.Run("Int32", benchSizes(benchmarkSwissMapPutReuse[int32], genKeys[int32]))
-		b.Run("String", benchSizes(benchmarkSwissMapPutReuse[string], genKeys[string]))
+	b.Run("impl=swissMap", func(b *testing.B) {
+		b.Run("t=Int64", benchSizes(benchmarkSwissMapPutReuse[int64], genKeys[int64]))
+		b.Run("t=Int32", benchSizes(benchmarkSwissMapPutReuse[int32], genKeys[int32]))
+		b.Run("t=String", benchSizes(benchmarkSwissMapPutReuse[string], genKeys[string]))
 	})
 }
 
 func BenchmarkMapPutDelete(b *testing.B) {
-	b.Run("runtimeMap", func(b *testing.B) {
-		b.Run("Int64", benchSizes(benchmarkRuntimeMapPutDelete[int64], genKeys[int64]))
-		b.Run("Int32", benchSizes(benchmarkRuntimeMapPutDelete[int32], genKeys[int32]))
-		b.Run("String", benchSizes(benchmarkRuntimeMapPutDelete[string], genKeys[string]))
+	b.Run("impl=runtimeMap", func(b *testing.B) {
+		b.Run("t=Int64", benchSizes(benchmarkRuntimeMapPutDelete[int64], genKeys[int64]))
+		b.Run("t=Int32", benchSizes(benchmarkRuntimeMapPutDelete[int32], genKeys[int32]))
+		b.Run("t=String", benchSizes(benchmarkRuntimeMapPutDelete[string], genKeys[string]))
 	})
-	b.Run("swissMap", func(b *testing.B) {
-		b.Run("Int64", benchSizes(benchmarkSwissMapPutDelete[int64], genKeys[int64]))
-		b.Run("Int32", benchSizes(benchmarkSwissMapPutDelete[int32], genKeys[int32]))
-		b.Run("String", benchSizes(benchmarkSwissMapPutDelete[string], genKeys[string]))
+	b.Run("impl=swissMap", func(b *testing.B) {
+		b.Run("t=Int64", benchSizes(benchmarkSwissMapPutDelete[int64], genKeys[int64]))
+		b.Run("t=Int32", benchSizes(benchmarkSwissMapPutDelete[int32], genKeys[int32]))
+		b.Run("t=String", benchSizes(benchmarkSwissMapPutDelete[string], genKeys[string]))
 	})
 }
 
@@ -116,7 +116,7 @@ func benchSizes[T benchTypes](
 
 	return func(b *testing.B) {
 		for _, n := range cases {
-			b.Run(strconv.Itoa(n), func(b *testing.B) { f(b, n, genKeys) })
+			b.Run("len="+strconv.Itoa(n), func(b *testing.B) { f(b, n, genKeys) })
 		}
 	}
 }
