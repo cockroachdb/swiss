@@ -432,7 +432,7 @@ func (m *Map[K, V]) Put(key K, value V) {
 				b.checkInvariants(m)
 				return
 			}
-			match = match.remove(i)
+			match = match.removeFirst()
 		}
 
 		match = g.ctrls.matchEmpty()
@@ -554,7 +554,7 @@ func (m *Map[K, V]) Get(key K) (value V, ok bool) {
 			if key == slot.key {
 				return slot.value, true
 			}
-			match = match.remove(i)
+			match = match.removeFirst()
 		}
 
 		match = g.ctrls.matchEmpty()
@@ -603,7 +603,7 @@ func (m *Map[K, V]) Delete(key K) {
 				b.checkInvariants(m)
 				return
 			}
-			match = match.remove(i)
+			match = match.removeFirst()
 		}
 
 		match = g.ctrls.matchEmpty()
@@ -1456,9 +1456,9 @@ func (b bitset) first() uint32 {
 	return uint32(bits.TrailingZeros64(uint64(b))) >> 3
 }
 
-// remove removes the slot with the given relative index.
-func (b bitset) remove(i uint32) bitset {
-	return b &^ (bitset(0x80) << (i << 3))
+// removeFirst removes the first set bit (that is, resets the least significant set bit to 0).
+func (b bitset) removeFirst() bitset {
+	return b & (b - 1)
 }
 
 func (b bitset) String() string {
