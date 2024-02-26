@@ -19,6 +19,8 @@ import (
 	"io"
 	"strconv"
 	"testing"
+
+	"github.com/aclements/go-perfevent/perfbench"
 )
 
 func BenchmarkMapIter(b *testing.B) {
@@ -165,12 +167,15 @@ func genKeys[T benchTypes](start, end int) []T {
 }
 
 func benchmarkRuntimeMapIter[T benchTypes](b *testing.B, n int, genKeys func(start, end int) []T) {
+	c := perfbench.Open(b)
+
 	m := make(map[T]T, n)
 	keys := genKeys(0, n)
 	for _, k := range keys {
 		m[k] = k
 	}
 	b.ResetTimer()
+	c.Reset()
 	var tmp T
 	for i := 0; i < b.N; i++ {
 		for k, v := range m {
@@ -180,12 +185,15 @@ func benchmarkRuntimeMapIter[T benchTypes](b *testing.B, n int, genKeys func(sta
 }
 
 func benchmarkSwissMapIter[T benchTypes](b *testing.B, n int, genKeys func(start, end int) []T) {
+	c := perfbench.Open(b)
+
 	m := New[T, T](n)
 	keys := genKeys(0, n)
 	for _, k := range keys {
 		m.Put(k, k)
 	}
 	b.ResetTimer()
+	c.Reset()
 	var tmp T
 	for i := 0; i < b.N; i++ {
 		m.All(func(k, v T) bool {
@@ -198,6 +206,8 @@ func benchmarkSwissMapIter[T benchTypes](b *testing.B, n int, genKeys func(start
 func benchmarkRuntimeMapGetMiss[T benchTypes](
 	b *testing.B, n int, genKeys func(start, end int) []T,
 ) {
+	c := perfbench.Open(b)
+
 	m := make(map[T]T)
 	keys := genKeys(0, n)
 	miss := genKeys(-n, 0)
@@ -205,12 +215,15 @@ func benchmarkRuntimeMapGetMiss[T benchTypes](
 		m[k] = k
 	}
 	b.ResetTimer()
+	c.Reset()
 	for i := 0; i < b.N; i++ {
 		_ = m[miss[i%len(miss)]]
 	}
 }
 
 func benchmarkSwissMapGetMiss[T comparable](b *testing.B, n int, genKeys func(start, end int) []T) {
+	c := perfbench.Open(b)
+
 	m := New[T, T](0)
 	keys := genKeys(0, n)
 	miss := genKeys(-n, 0)
@@ -218,10 +231,12 @@ func benchmarkSwissMapGetMiss[T comparable](b *testing.B, n int, genKeys func(st
 		m.Put(keys[j], keys[j])
 	}
 	b.ResetTimer()
+	c.Reset()
 	var ok bool
 	for i := 0; i < b.N; i++ {
 		_, ok = m.Get(miss[i%len(miss)])
 	}
+	c.Stop()
 	b.StopTimer()
 	fmt.Fprint(io.Discard, ok)
 
@@ -240,6 +255,8 @@ func benchmarkSwissMapGetMiss[T comparable](b *testing.B, n int, genKeys func(st
 func benchmarkRuntimeMapGetHit[T benchTypes](
 	b *testing.B, n int, genKeys func(start, end int) []T,
 ) {
+	c := perfbench.Open(b)
+
 	m := make(map[T]T, n)
 	keys := genKeys(0, n)
 	for _, k := range keys {
@@ -254,22 +271,27 @@ func benchmarkRuntimeMapGetHit[T benchTypes](
 	keys = genKeys(0, n)
 
 	b.ResetTimer()
+	c.Reset()
 	for i := 0; i < b.N; i++ {
 		_ = m[keys[i%n]]
 	}
 }
 
 func benchmarkSwissMapGetHit[T benchTypes](b *testing.B, n int, genKeys func(start, end int) []T) {
+	c := perfbench.Open(b)
+
 	m := New[T, T](n)
 	keys := genKeys(0, n)
 	for _, k := range keys {
 		m.Put(k, k)
 	}
 	b.ResetTimer()
+	c.Reset()
 	var ok bool
 	for i := 0; i < b.N; i++ {
 		_, ok = m.Get(keys[i%n])
 	}
+	c.Stop()
 	b.StopTimer()
 	fmt.Fprint(io.Discard, ok)
 }
@@ -277,8 +299,11 @@ func benchmarkSwissMapGetHit[T benchTypes](b *testing.B, n int, genKeys func(sta
 func benchmarkRuntimeMapPutGrow[T benchTypes](
 	b *testing.B, n int, genKeys func(start, end int) []T,
 ) {
+	c := perfbench.Open(b)
+
 	keys := genKeys(0, n)
 	b.ResetTimer()
+	c.Reset()
 	for i := 0; i < b.N; i++ {
 		m := make(map[T]T)
 		for _, k := range keys {
@@ -288,9 +313,12 @@ func benchmarkRuntimeMapPutGrow[T benchTypes](
 }
 
 func benchmarkSwissMapPutGrow[T benchTypes](b *testing.B, n int, genKeys func(start, end int) []T) {
+	c := perfbench.Open(b)
+
 	var m Map[T, T]
 	keys := genKeys(0, n)
 	b.ResetTimer()
+	c.Reset()
 	for i := 0; i < b.N; i++ {
 		m.Init(0)
 		for _, k := range keys {
@@ -302,8 +330,11 @@ func benchmarkSwissMapPutGrow[T benchTypes](b *testing.B, n int, genKeys func(st
 func benchmarkRuntimeMapPutPreAllocate[T benchTypes](
 	b *testing.B, n int, genKeys func(start, end int) []T,
 ) {
+	c := perfbench.Open(b)
+
 	keys := genKeys(0, n)
 	b.ResetTimer()
+	c.Reset()
 	for i := 0; i < b.N; i++ {
 		m := make(map[T]T, n)
 		for _, k := range keys {
@@ -315,9 +346,12 @@ func benchmarkRuntimeMapPutPreAllocate[T benchTypes](
 func benchmarkSwissMapPutPreAllocate[T benchTypes](
 	b *testing.B, n int, genKeys func(start, end int) []T,
 ) {
+	c := perfbench.Open(b)
+
 	var m Map[T, T]
 	keys := genKeys(0, n)
 	b.ResetTimer()
+	c.Reset()
 	for i := 0; i < b.N; i++ {
 		m.Init(n)
 		for _, k := range keys {
@@ -329,9 +363,12 @@ func benchmarkSwissMapPutPreAllocate[T benchTypes](
 func benchmarkRuntimeMapPutReuse[T benchTypes](
 	b *testing.B, n int, genKeys func(start, end int) []T,
 ) {
+	c := perfbench.Open(b)
+
 	m := make(map[T]T, n)
 	keys := genKeys(0, n)
 	b.ResetTimer()
+	c.Reset()
 	for i := 0; i < b.N; i++ {
 		for _, k := range keys {
 			m[k] = k
@@ -345,9 +382,12 @@ func benchmarkRuntimeMapPutReuse[T benchTypes](
 func benchmarkSwissMapPutReuse[T benchTypes](
 	b *testing.B, n int, genKeys func(start, end int) []T,
 ) {
+	c := perfbench.Open(b)
+
 	m := New[T, T](n)
 	keys := genKeys(0, n)
 	b.ResetTimer()
+	c.Reset()
 	for i := 0; i < b.N; i++ {
 		for _, k := range keys {
 			m.Put(k, k)
@@ -359,12 +399,15 @@ func benchmarkSwissMapPutReuse[T benchTypes](
 func benchmarkRuntimeMapPutDelete[T benchTypes](
 	b *testing.B, n int, genKeys func(start, end int) []T,
 ) {
+	c := perfbench.Open(b)
+
 	m := make(map[T]T, n)
 	keys := genKeys(0, n)
 	for _, k := range keys {
 		m[k] = k
 	}
 	b.ResetTimer()
+	c.Reset()
 	for i := 0; i < b.N; i++ {
 		j := i % n
 		delete(m, keys[j])
@@ -375,12 +418,15 @@ func benchmarkRuntimeMapPutDelete[T benchTypes](
 func benchmarkSwissMapPutDelete[T benchTypes](
 	b *testing.B, n int, genKeys func(start, end int) []T,
 ) {
+	c := perfbench.Open(b)
+
 	m := New[T, T](n)
 	keys := genKeys(0, n)
 	for _, k := range keys {
 		m.Put(k, k)
 	}
 	b.ResetTimer()
+	c.Reset()
 	for i := 0; i < b.N; i++ {
 		j := i % n
 		m.Delete(keys[j])
