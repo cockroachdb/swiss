@@ -120,7 +120,7 @@ func TestMatchEmpty(t *testing.T) {
 		expected []uint32
 	}{
 		{[]ctrl{0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8}, nil},
-		{[]ctrl{0x1, 0x2, 0x3, ctrlEmpty, 0x5, ctrlDeleted, 0x7, ctrlSentinel}, []uint32{3}},
+		{[]ctrl{0x1, 0x2, 0x3, ctrlEmpty, 0x5, ctrlDeleted, 0x7, 0x8}, []uint32{3}},
 		{[]ctrl{0x1, 0x2, 0x3, ctrlEmpty, 0x5, 0x6, ctrlEmpty, 0x8}, []uint32{3, 6}},
 	}
 	for _, c := range testCases {
@@ -143,7 +143,7 @@ func TestMatchEmptyOrDeleted(t *testing.T) {
 		expected []uint32
 	}{
 		{[]ctrl{0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8}, nil},
-		{[]ctrl{0x1, 0x2, ctrlEmpty, ctrlDeleted, 0x5, 0x6, 0x7, ctrlSentinel}, []uint32{2, 3}},
+		{[]ctrl{0x1, 0x2, ctrlEmpty, ctrlDeleted, 0x5, 0x6, 0x7, ctrlEmpty}, []uint32{2, 3, 7}},
 	}
 	for _, c := range testCases {
 		t.Run("", func(t *testing.T) {
@@ -164,17 +164,14 @@ func TestConvertNonFullToEmptyAndFullToDeleted(t *testing.T) {
 	expected := make([]ctrl, groupSize)
 	for i := 0; i < 100; i++ {
 		for j := 0; j < groupSize; j++ {
-			switch rand.Intn(4) {
-			case 0: // 25% empty
+			switch rand.Intn(3) {
+			case 0: // 33% empty
 				ctrls[j] = ctrlEmpty
 				expected[j] = ctrlEmpty
-			case 1: // 25% deleted
+			case 1: // 33% deleted
 				ctrls[j] = ctrlDeleted
 				expected[j] = ctrlEmpty
-			case 2: // 25% sentinel
-				ctrls[j] = ctrlSentinel
-				expected[j] = ctrlEmpty
-			default: // 25% full
+			default: // 33% full
 				ctrls[j] = ctrl(rand.Intn(127))
 				expected[j] = ctrlDeleted
 			}
