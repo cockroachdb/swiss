@@ -204,14 +204,13 @@ const (
 	defaultMaxBucketCapacity uint32 = 4096
 )
 
-func init() {
+func _() {
 	// Don't add fields to the bucket unnecessarily. It is packed for
 	// efficiency so that we can fit 2 buckets into a 64-byte cache line on
 	// 64-bit architectures.
+	// This will cause a type error if the size changes.
 	const expectedSize = ptrSize + 6*4
-	if unsafe.Sizeof(bucket[int, int]{}) != expectedSize {
-		panic(fmt.Sprintf("bucket size is not %d bytes", expectedSize))
-	}
+	var _ [0]struct{} = [unsafe.Sizeof(bucket[int, int]{}) - expectedSize]struct{}{}
 }
 
 // slot holds a key and value.
