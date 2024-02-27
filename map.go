@@ -204,8 +204,12 @@ const (
 )
 
 func init() {
-	if unsafe.Sizeof(bucket[int, int]{}) != 32 {
-		panic("bucket size is not 32 bytes")
+	// Don't add fields to the bucket unnecessarily. It is packed for
+	// efficiency so that we can fit 2 buckets into a 64-byte cache line on
+	// 64-bit architectures.
+	const expectedSize = ptrSize + 6*4
+	if unsafe.Sizeof(bucket[int, int]{}) != expectedSize {
+		panic(fmt.Sprintf("bucket size is not %d bytes", expectedSize))
 	}
 }
 
