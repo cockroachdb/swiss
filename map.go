@@ -232,6 +232,15 @@ type bucket[K comparable, V any] struct {
 	// when a bucket is resized.
 	groupMask uint32
 
+	// Padding to force the bucket size to be 32 bytes. On 32-bit systems,
+	// ptrSize will be 4 and the padding will be 4 bytes. On 64-bit systems,
+	// ptrSize will be 8 and the padding will be 0 bytes. Note that this
+	// padding cannot be the last field in the struct or else the Go compiler
+	// will pad the struct an additional 8 bytes on 64-bit systems so that we
+	// can take the address of the field without stepping outside the bounds
+	// of the struct.
+	_ [32 - ptrSize - 4*6]uint8
+
 	// Capacity, used, and growthLeft are only updated on mutation operations
 	// (Put, Delete). Read operations (Get) only access the groups and
 	// groupMask fields.
