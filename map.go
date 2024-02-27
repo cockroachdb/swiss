@@ -199,8 +199,8 @@ const (
 	bitsetEmpty   = bitsetLSB * uint64(ctrlEmpty)
 	bitsetDeleted = bitsetLSB * uint64(ctrlDeleted)
 
-	minBucketCapacity        uint32 = 7
-	defaultMaxBucketCapacity uint32 = 4095
+	minBucketCapacity        uint32 = groupSize
+	defaultMaxBucketCapacity uint32 = 4096
 )
 
 func init() {
@@ -236,16 +236,13 @@ type bucket[K comparable, V any] struct {
 	// when a bucket is resized.
 	groupMask uint32
 
-	// Capacity, used, and growthLeft are only updated on mutation operations
+	// slotMask, used, and growthLeft are only updated on mutation operations
 	// (Put, Delete). Read operations (Get) only access the groups and
 	// groupMask fields.
 
-	// The total number slots (always 2^N-1). The capacity is used as a mask
-	// to quickly compute i%N using a bitwise & operation.
-	//
-	// TODO(peter): Rename to slotMask. The total number of slots is now
-	// actually 2^N and we can use any slot so the capacity is 2^N not 2^N-1.
-	capacity uint32
+	// The total number slots minus 1 (always 2^N-1). The slotMask is used to
+	// quickly compute i%N using a bitwise & operation.
+	slotMask uint32
 	// The number of filled slots (i.e. the number of elements in the bucket).
 	used uint32
 	// The number of slots we can still fill without needing to rehash.
@@ -309,7 +306,11 @@ type Map[K comparable, V any] struct {
 }
 
 func normalizeCapacity(capacity uint32) uint32 {
-	return (uint32(1) << bits.Len32(uint32(capacity)-1)) - 1
+	v := (uint32(1) << bits.Len32(uint32(capacity-1)))
+	if v != 0 {
+		return v
+	}
+	return uint32(1) << 31
 }
 
 // New constructs a new Map with the specified initial capacity. If
@@ -364,7 +365,7 @@ func (m *Map[K, V]) Init(initialCapacity int, options ...Option[K, V]) {
 		// target capacity to initialCapacity*8/7.
 		targetCapacity := uintptr((initialCapacity * groupSize) / maxAvgGroupLoad)
 		if targetCapacity <= uintptr(m.maxBucketCapacity) {
-			// Normalize targetCapacity to the smallest value of the form 2^k-1.
+			// Normalize targetCapacity to the smallest value of the form 2^k.
 			m.bucket0.init(m, normalizeCapacity(uint32(targetCapacity)))
 		} else {
 			// If targetCapacity is larger than maxBucketCapacity we need to
@@ -488,7 +489,7 @@ func (m *Map[K, V]) Put(key K, value V) {
 			}
 
 			if invariants && b.growthLeft != 0 {
-				panic(fmt.Sprintf("invariant failed: growthLeft is unexpectedly non-zero: %d", b.growthLeft))
+				panic(fmt.Sprintf("invariant failed: growthLeft is unexpectedly non-zero: %d\n%#v", b.growthLeft, b))
 			}
 
 			b.rehash(m)
@@ -521,8 +522,8 @@ func (m *Map[K, V]) Get(key K) (value V, ok bool) {
 	// find routine for performance.
 
 	// To find the location of a key in the table, we compute hash(key). From
-	// h1(hash(key)) and the capacity, we construct a probeSeq that visits every
-	// group of slots in some interesting order.
+	// h1(hash(key)) and the capacity (slotMask), we construct a probeSeq that
+	// visits every group of slots in some interesting order.
 	//
 	// We walk through these indices. At each index, we select the entire group
 	// starting with that index and extract potential candidates: occupied slots
@@ -663,8 +664,8 @@ func (m *Map[K, V]) All(yield func(key K, value V) bool) {
 			return true
 		}
 
-		// Snapshot the capacity, controls, and slots so that iteration remains
-		// valid if the map is resized during iteration.
+		// Snapshot the groups, and groupMask so that iteration remains valid
+		// if the map is resized during iteration.
 		groups := b.groups
 		groupMask := b.groupMask
 
@@ -711,7 +712,7 @@ func (m *Map[K, V]) Len() int {
 func (m *Map[K, V]) capacity() int {
 	var capacity int
 	m.buckets(0, func(b *bucket[K, V]) bool {
-		capacity += int(b.capacity)
+		capacity += int(b.capacity())
 		return true
 	})
 	return capacity
@@ -981,9 +982,9 @@ func (m *Map[K, V]) checkInvariants() {
 }
 
 func (b *bucket[K, V]) close(allocator Allocator[K, V]) {
-	if b.capacity > 0 {
+	if b.slotMask > 0 {
 		allocator.Free(b.groups.Slice(0, uintptr(b.groupMask+1)))
-		b.capacity = 0
+		b.slotMask = 0
 		b.used = 0
 	}
 	b.groups = makeUnsafeSlice([]Group[K, V](nil))
@@ -994,7 +995,15 @@ func (b *bucket[K, V]) close(allocator Allocator[K, V]) {
 // A tombstone is a slot that has been deleted but is still considered
 // occupied so as not to violate the probing invariant.
 func (b *bucket[K, V]) tombstones() uint32 {
-	return (b.capacity*maxAvgGroupLoad)/groupSize - b.used - b.growthLeft
+	return (b.capacity()*maxAvgGroupLoad)/groupSize - b.used - b.growthLeft
+}
+
+// capacity returns the total capacity of the bucket.
+func (b *bucket[K, V]) capacity() uint32 {
+	if b.slotMask == 0 {
+		return 0
+	}
+	return b.slotMask + 1
 }
 
 // uncheckedPut inserts an entry known not to be in the table. Used by Put
@@ -1002,7 +1011,7 @@ func (b *bucket[K, V]) tombstones() uint32 {
 // insertion.
 func (b *bucket[K, V]) uncheckedPut(h uintptr, key K, value V) {
 	if invariants && b.growthLeft == 0 {
-		panic("invariant failed: growthLeft is unexpectedly 0")
+		panic(fmt.Sprintf("invariant failed: growthLeft is unexpectedly 0\n%#v", b))
 	}
 
 	// Given key and its hash hash(key), to insert it, we construct a
@@ -1041,7 +1050,7 @@ func (b *bucket[K, V]) rehash(m *Map[K, V]) {
 	// to reclaim because every tombstone will be dropped and we're only
 	// called if we've reached the thresold of capacity/8 empty slots. So the
 	// number of tomstones is capacity*7/8 - used.
-	if b.capacity > groupSize && b.tombstones() >= b.capacity/3 {
+	if b.slotMask > groupSize && b.tombstones() >= b.slotMask/3 {
 		b.rehashInPlace(m)
 		return
 	}
@@ -1049,7 +1058,7 @@ func (b *bucket[K, V]) rehash(m *Map[K, V]) {
 	// If the newCapacity is larger than the maxBucketCapacity split the
 	// bucket instead of resizing. Each of the new buckets will be the same
 	// size as the current bucket.
-	newCapacity := 2*b.capacity + 1
+	newCapacity := 2 * b.capacity()
 	if newCapacity > m.maxBucketCapacity {
 		b.split(m)
 		return
@@ -1059,12 +1068,16 @@ func (b *bucket[K, V]) rehash(m *Map[K, V]) {
 }
 
 func (b *bucket[K, V]) init(m *Map[K, V], newCapacity uint32) {
-	if (1 + newCapacity) < groupSize {
-		newCapacity = groupSize - 1
+	if newCapacity < groupSize {
+		newCapacity = groupSize
 	}
 
-	b.capacity = newCapacity
-	b.groupMask = (b.capacity+groupSize-1)/groupSize - 1
+	if invariants && newCapacity&(newCapacity-1) != 0 {
+		panic(fmt.Sprintf("invariant failed: bucket size %d is not a power of 2", newCapacity))
+	}
+
+	b.slotMask = newCapacity - 1
+	b.groupMask = (newCapacity+groupSize-1)/groupSize - 1
 	b.groups = makeUnsafeSlice(m.allocator.Alloc(int(b.groupMask + 1)))
 
 	for i := uint32(0); i <= b.groupMask; i++ {
@@ -1089,7 +1102,7 @@ func (b *bucket[K, V]) resize(m *Map[K, V], newCapacity uint32) {
 
 	oldGroups := b.groups
 	oldGroupMask := b.groupMask
-	oldCapacity := b.capacity
+	oldCapacity := b.slotMask
 	b.init(m, newCapacity)
 
 	for i := uint32(0); i <= oldGroupMask; i++ {
@@ -1135,7 +1148,7 @@ func (b *bucket[K, V]) split(m *Map[K, V]) {
 		localDepth: b.localDepth,
 		index:      b.index,
 	}
-	newb.init(m, b.capacity)
+	newb.init(m, b.capacity())
 
 	// Divide the records between the 2 buckets (b and newb). This is done by
 	// examining the new bit in the hash that will be added to the bucket
@@ -1175,29 +1188,29 @@ func (b *bucket[K, V]) split(m *Map[K, V]) {
 		}
 	}
 
-	if b.used >= (b.capacity*maxAvgGroupLoad)/groupSize {
+	if b.used >= (b.capacity()*maxAvgGroupLoad)/groupSize {
 		// We didn't move any records to the new bucket. Either
 		// maxBucketCapacity is too small and we got unlucky, or we have a
 		// degenerate hash function (e.g. one that returns a constant in the
 		// high bits).
-		m.maxBucketCapacity = 2*m.maxBucketCapacity + 1
+		m.maxBucketCapacity = 2 * (m.maxBucketCapacity + 1)
 		newb.close(m.allocator)
 		*newb = bucket[K, V]{}
-		b.resize(m, 2*b.capacity+1)
+		b.resize(m, 2*b.capacity())
 		return
 	}
 
-	if newb.used >= (newb.capacity*maxAvgGroupLoad)/groupSize || newb.growthLeft == 0 {
+	if newb.used >= (newb.capacity()*maxAvgGroupLoad)/groupSize || newb.growthLeft == 0 {
 		// We moved all of the records to the new bucket (note the two
 		// conditions are equivalent and both are present merely for clarity).
 		// Similar to the above, bump maxBucketCapacity and resize the bucket
 		// rather than splitting. We'll replace the old bucket with the new
 		// bucket in the directory.
-		m.maxBucketCapacity = 2*m.maxBucketCapacity + 1
+		m.maxBucketCapacity = 2 * (m.maxBucketCapacity + 1)
 		b.close(m.allocator)
 		newb = m.installBucket(newb)
 		m.checkInvariants()
-		newb.resize(m, 2*newb.capacity+1)
+		newb.resize(m, 2*newb.capacity())
 		return
 	}
 
@@ -1242,7 +1255,7 @@ func (b *bucket[K, V]) rehashInPlace(m *Map[K, V]) {
 		panic(fmt.Sprintf("invariant failed: attempt to rehash bucket %p, but it is not at Map.dir[%d/%p]",
 			b, b.index, m.dir.At(uintptr(b.index))))
 	}
-	if b.capacity == 0 {
+	if b.slotMask == 0 {
 		return
 	}
 
@@ -1328,13 +1341,13 @@ func (b *bucket[K, V]) rehashInPlace(m *Map[K, V]) {
 
 func (b *bucket[K, V]) resetGrowthLeft() {
 	var growthLeft int
-	if b.capacity < groupSize {
+	if b.slotMask < groupSize {
 		// If the map fits in a single group then we're able to fill all of
 		// the slots except 1 (an empty slot is needed to terminate find
 		// operations).
-		growthLeft = int(b.capacity - 1)
+		growthLeft = int(b.slotMask)
 	} else {
-		growthLeft = int((b.capacity * maxAvgGroupLoad) / groupSize)
+		growthLeft = int((b.capacity() * maxAvgGroupLoad) / groupSize)
 	}
 	if growthLeft < 0 {
 		growthLeft = 0
@@ -1388,7 +1401,7 @@ func (b *bucket[K, V]) checkInvariants(m *Map[K, V]) {
 				used, b.used, b))
 		}
 
-		growthLeft := (b.capacity*maxAvgGroupLoad)/groupSize - b.used - deleted
+		growthLeft := (b.capacity()*maxAvgGroupLoad)/groupSize - b.used - deleted
 		if growthLeft != b.growthLeft {
 			panic(fmt.Sprintf("invariant failed: found %d growthLeft, but expected %d\n%#v",
 				b.growthLeft, growthLeft, b))
@@ -1413,7 +1426,7 @@ func (b *bucket[K, V]) GoString() string {
 }
 
 func (b *bucket[K, V]) goFormat(w io.Writer) {
-	fmt.Fprintf(w, "capacity=%d  used=%d  growth-left=%d\n", b.capacity, b.used, b.growthLeft)
+	fmt.Fprintf(w, "capacity=%d  used=%d  growth-left=%d\n", b.capacity(), b.used, b.growthLeft)
 	for i := uint32(0); i <= b.groupMask; i++ {
 		g := b.groups.At(uintptr(i))
 		fmt.Fprintf(w, "  group %d\n", i)
