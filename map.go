@@ -1663,6 +1663,14 @@ func makeUnsafeSlice[T any](s []T) unsafeSlice[T] {
 }
 
 // At returns a pointer to the element at index i.
+//
+// The go:nocheckptr declaration is need to silence the runtime check in race
+// builds that the memory for the returned *T is entirely contained within a
+// single memory allocation. We are "safely" violating this requirement when
+// access Groups.ctrls for the empty group. See unsafeConvertSlice for
+// additional commentary.
+//
+//go:nocheckptr
 func (s unsafeSlice[T]) At(i uintptr) *T {
 	var t T
 	return (*T)(unsafe.Add(s.ptr, unsafe.Sizeof(t)*i))
@@ -1673,6 +1681,15 @@ func (s unsafeSlice[T]) Slice(start, end uintptr) []T {
 	return unsafe.Slice((*T)(s.ptr), end)[start:end]
 }
 
+// unsafeConvertSlice (unsafely) casts a []Src to a []Dest. The go:nocheckptr
+// declaration is needed to silence the runtime check in race builds that the
+// memory for the []Dest is entirely contained within a single memory
+// allocation. We are "safely" violating this requirement when casting
+// emptyCtrls (a []ctrl) to an empty group ([]*Group[K, V]). The reason this
+// is safe is that we're never accessing Group.slots because the controls are
+// all marked as empty.
+//
+//go:nocheckptr
 func unsafeConvertSlice[Dest any, Src any](s []Src) []Dest {
 	return unsafe.Slice((*Dest)(unsafe.Pointer(unsafe.SliceData(s))), len(s))
 }
