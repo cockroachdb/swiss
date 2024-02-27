@@ -202,13 +202,13 @@ func TestInitialCapacity(t *testing.T) {
 		expectedBuckets   uintptr
 	}{
 		{0, defaultMaxBucketCapacity, 0, 1},
-		{1, defaultMaxBucketCapacity, 7, 1},
-		{7, defaultMaxBucketCapacity, 7, 1},
-		{8, defaultMaxBucketCapacity, 15, 1},
-		{896, defaultMaxBucketCapacity, 1023, 1},
-		{897, defaultMaxBucketCapacity, 2047, 1},
-		{16, 7, 7 * 4, 4},
-		{65536, 4095, 4095 * 32, 32},
+		{1, defaultMaxBucketCapacity, 8, 1},
+		{7, defaultMaxBucketCapacity, 8, 1},
+		{8, defaultMaxBucketCapacity, 16, 1},
+		{896, defaultMaxBucketCapacity, 1024, 1},
+		{897, defaultMaxBucketCapacity, 2048, 1},
+		{16, 7, 8 * 4, 4},
+		{65536, 4095, 4096 * 32, 32},
 	}
 	for _, c := range testCases {
 		t.Run("", func(t *testing.T) {
@@ -277,7 +277,7 @@ func TestBasic(t *testing.T) {
 				WithHash[int, int](func(key *int, seed uintptr) uintptr {
 					return h
 				}),
-				WithMaxBucketCapacity[int, int](7))
+				WithMaxBucketCapacity[int, int](8))
 			test(t, m)
 		}
 
@@ -371,7 +371,7 @@ func TestIterateMutate(t *testing.T) {
 	vals := make(map[int]int)
 	m.All(func(k, v int) bool {
 		if (k % 10) == 0 {
-			m.dir.At(0).resize(m, 2*m.dir.At(0).capacity+1)
+			m.dir.At(0).resize(m, 2*m.dir.At(0).capacity)
 		}
 		vals[k] = v
 		return true
@@ -426,7 +426,7 @@ func TestClear(t *testing.T) {
 		maxBucketCapacity uint32
 	}{
 		{count: 1000, maxBucketCapacity: math.MaxUint32},
-		{count: 1000, maxBucketCapacity: 7},
+		{count: 1000, maxBucketCapacity: 8},
 	}
 	for _, c := range testCases {
 		t.Run("", func(t *testing.T) {
@@ -504,7 +504,7 @@ func TestResizeVsSplit(t *testing.T) {
 		m.Put(x, x)
 	}
 	start = time.Now()
-	m.dir.At(0).resize(m, 2*m.dir.At(0).capacity+1)
+	m.dir.At(0).resize(m, 2*m.dir.At(0).capacity)
 	if testing.Verbose() {
 		fmt.Printf("resize(%d): %6.3fms\n", count, time.Since(start).Seconds()*1000)
 	}
