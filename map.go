@@ -624,8 +624,8 @@ func (m *Map[K, V]) Clear() {
 	m.buckets(0, func(b *bucket[K, V]) bool {
 		for i := uint32(0); i <= b.groupMask; i++ {
 			g := b.groups.At(uintptr(i))
+			g.ctrls.SetEmpty()
 			for j := uint32(0); j < groupSize; j++ {
-				g.ctrls.Set(j, ctrlEmpty)
 				*g.slots.At(j) = slot[K, V]{}
 			}
 		}
@@ -1075,9 +1075,7 @@ func (b *bucket[K, V]) init(m *Map[K, V], newCapacity uint32) {
 
 	for i := uint32(0); i <= b.groupMask; i++ {
 		g := b.groups.At(uintptr(i))
-		for j := uint32(0); j < groupSize; j++ {
-			g.ctrls.Set(j, ctrlEmpty)
-		}
+		g.ctrls.SetEmpty()
 	}
 
 	b.resetGrowthLeft()
@@ -1491,6 +1489,11 @@ func (g *ctrlGroup) Get(i uint32) ctrl {
 // Set sets the i-th control byte.
 func (g *ctrlGroup) Set(i uint32, c ctrl) {
 	*(*ctrl)(unsafe.Add(unsafe.Pointer(g), i)) = c
+}
+
+// SetEmpty sets all the control bytes to empty.
+func (g *ctrlGroup) SetEmpty() {
+	*g = ctrlGroup(bitsetEmpty)
 }
 
 // matchH2 returns the set of slots which are full and for which the 7-bit hash
