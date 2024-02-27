@@ -1663,6 +1663,8 @@ func makeUnsafeSlice[T any](s []T) unsafeSlice[T] {
 }
 
 // At returns a pointer to the element at index i.
+//
+//go:nocheckptr
 func (s unsafeSlice[T]) At(i uintptr) *T {
 	var t T
 	return (*T)(unsafe.Add(s.ptr, unsafe.Sizeof(t)*i))
@@ -1673,6 +1675,7 @@ func (s unsafeSlice[T]) Slice(start, end uintptr) []T {
 	return unsafe.Slice((*T)(s.ptr), end)[start:end]
 }
 
+//go:nocheckptr
 func unsafeConvertSlice[Dest any, Src any](s []Src) []Dest {
 	return unsafe.Slice((*Dest)(unsafe.Pointer(unsafe.SliceData(s))), len(s))
 }
