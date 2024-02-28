@@ -202,16 +202,14 @@ const (
 	// The default maximum capacity a bucket is allowed to grow to before it
 	// will be split.
 	defaultMaxBucketCapacity uint32 = 4096
+
+	expectedBucketSize = ptrSize + 6*4
 )
 
-func _() {
-	// Don't add fields to the bucket unnecessarily. It is packed for
-	// efficiency so that we can fit 2 buckets into a 64-byte cache line on
-	// 64-bit architectures.
-	// This will cause a type error if the size changes.
-	const expectedSize = ptrSize + 6*4
-	var _ [0]struct{} = [unsafe.Sizeof(bucket[int, int]{}) - expectedSize]struct{}{}
-}
+// Don't add fields to the bucket unnecessarily. It is packed for efficiency so
+// that we can fit 2 buckets into a 64-byte cache line on 64-bit architectures.
+// This will cause a type error if the size of a bucket changes.
+var _ [0]struct{} = [unsafe.Sizeof(bucket[int, int]{}) - expectedBucketSize]struct{}{}
 
 // slot holds a key and value.
 type slot[K comparable, V any] struct {
