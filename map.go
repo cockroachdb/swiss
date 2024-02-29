@@ -203,6 +203,14 @@ const (
 	// will be split.
 	defaultMaxBucketCapacity uint32 = 4096
 
+	// ptrSize and shiftMask are used to optimize code generation for
+	// Map.bucket(), Map.bucketCount(), and bucketStep(). This technique was
+	// lifted from the Go runtime's runtime/map.go:bucketShift() routine. Note
+	// that ptrSize will be either 4 on 32-bit archs or 8 on 64-bit archs.
+	ptrSize   = 4 << (^uintptr(0) >> 63)
+	ptrBits   = ptrSize * 8
+	shiftMask = ptrSize*8 - 1
+
 	expectedBucketSize = ptrSize + 6*4
 )
 
@@ -716,15 +724,6 @@ func (m *Map[K, V]) capacity() int {
 	return capacity
 }
 
-const (
-	// ptrSize and shiftMask are used to optimize code generation for
-	// Map.bucket(), Map.bucketCount(), and bucketStep(). This technique was
-	// lifted from the Go runtime's runtime/map.go:bucketShift() routine. Note
-	// that ptrSize will be either 4 on 32-bit archs or 8 on 64-bit archs.
-	ptrSize   = 4 << (^uintptr(0) >> 63)
-	shiftMask = ptrSize*8 - 1
-)
-
 // bucket returns the bucket corresponding to hash value h.
 func (m *Map[K, V]) bucket(h uintptr) *bucket[K, V] {
 	// NB: It is faster to check for the single bucket case using a
@@ -863,7 +862,7 @@ func (m *Map[K, V]) globalDepth() uint32 {
 	if m.globalShift == 0 {
 		return 0
 	}
-	return 64 - m.globalShift
+	return ptrBits - m.globalShift
 }
 
 // bucketCount returns the number of buckets in the buckets directory.
@@ -941,7 +940,7 @@ func (m *Map[K, V]) growDirectory(newGlobalDepth, index uint32) (newIndex uint32
 		m.bucket0 = bucket[K, V]{}
 	}
 	m.dir = newDir
-	m.globalShift = 64 - newGlobalDepth
+	m.globalShift = ptrBits - newGlobalDepth
 
 	m.checkInvariants()
 	return newIndex
@@ -1143,7 +1142,7 @@ func (b *bucket[K, V]) split(m *Map[K, V]) {
 	// the record is moved to bucket newb. We're relying on the bucket b
 	// staying earlier in the directory than newb after the directory is
 	// grown.
-	mask := uintptr(1) << (64 - (b.localDepth + 1))
+	mask := uintptr(1) << (ptrBits - (b.localDepth + 1))
 	for i := uint32(0); i <= b.groupMask; i++ {
 		g := b.groups.At(uintptr(i))
 		for j := uint32(0); j < groupSize; j++ {
@@ -1175,7 +1174,7 @@ func (b *bucket[K, V]) split(m *Map[K, V]) {
 		}
 	}
 
-	if b.used >= (b.capacity*maxAvgGroupLoad)/groupSize {
+	if newb.used == 0 {
 		// We didn't move any records to the new bucket. Either
 		// maxBucketCapacity is too small and we got unlucky, or we have a
 		// degenerate hash function (e.g. one that returns a constant in the
@@ -1187,7 +1186,7 @@ func (b *bucket[K, V]) split(m *Map[K, V]) {
 		return
 	}
 
-	if newb.used >= (newb.capacity*maxAvgGroupLoad)/groupSize || newb.growthLeft == 0 {
+	if b.used == 0 {
 		// We moved all of the records to the new bucket (note the two
 		// conditions are equivalent and both are present merely for clarity).
 		// Similar to the above, bump maxBucketCapacity and resize the bucket
