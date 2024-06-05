@@ -17,10 +17,10 @@
 // bumping of the go versions supported by adjusting the build tags below. The
 // way go version tags work the tag for goX.Y will be declared for every
 // subsequent release. So go1.20 will be defined for go1.21, go1.22, etc. The
-// build tag "go1.20 && !go1.23" defines the range [go1.20, go1.23) (inclusive
-// on go1.20, exclusive on go1.23).
+// build tag "go1.20 && !go1.24" defines the range [go1.20, go1.24) (inclusive
+// on go1.20, exclusive on go1.24).
 
-//go:build go1.20 && !go1.23
+//go:build go1.20 && !go1.24
 
 package swiss
 
