@@ -20,7 +20,9 @@
 // build tag "go1.20 && !go1.24" defines the range [go1.20, go1.24) (inclusive
 // on go1.20, exclusive on go1.24).
 
-//go:build go1.20 && !go1.24
+// The untested_go_version flag enables building on any go version, intended
+// to ease testing against Go at tip.
+//go:build (go1.20 && !go1.24) || untested_go_version
 
 package swiss
 
