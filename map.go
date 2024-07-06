@@ -696,6 +696,83 @@ func (m *Map[K, V]) All(yield func(key K, value V) bool) {
 	})
 }
 
+// Scan calls yield sequentially for each key and value present in the map starting at a cursor.
+// If the yield function returns false, the iteration stops.
+// cursor is a previously returned cursor from a call to Scan or 0 to start from the beginning.
+// The nextCursor returned is the cursor to use in the next call to Scan.
+// nextCursor is 0 if the iteration is complete.
+//
+// Example usage:
+//
+//	var cursor uint32
+//	for {
+//		keys := make([]int, 0, 10)
+//		cursor = m.Scan(cursor, func(key K, value V) bool {
+//			keys = append(keys, key)
+//			return len(keys) < 10
+//		})
+//		processKeys(keys)
+//		if cursor == 0 {
+//			break
+//		}
+//	}
+func (m *Map[K, V]) Scan(cursor uint32, yield func(key K, value V) bool) (nextCursor uint32) {
+	bucketSize := m.maxBucketCapacity / groupSize // the maximum number of groups a bucket can hold, default is 4096 / 8 = 512
+	bucketIndex := cursor / (bucketSize * groupSize)
+	groupOffset := (cursor / groupSize) % bucketSize
+	slotOffset := cursor % groupSize
+
+	bucketCount := m.bucketCount()
+	if bucketIndex >= bucketCount {
+		return
+	}
+
+	var canceled uint32
+
+	m.buckets(uintptr(bucketIndex), func(b *bucket[K, V]) bool {
+		if b.index < bucketIndex {
+			bucketIndex = 0
+			groupOffset = 0
+			slotOffset = 0
+			return false
+		}
+		bucketIndex = b.index
+
+		if b.used == 0 {
+			groupOffset = 0
+			slotOffset = 0
+			return true
+		}
+
+		// Snapshot the groups, and groupMask so that iteration remains valid
+		// if the map is resized during iteration.
+		groups := b.groups
+		groupMask := b.groupMask
+
+		for i := groupOffset; i <= groupMask; i++ {
+			groupOffset = i
+			g := groups.At(uintptr(i))
+			for j := slotOffset; j < groupSize; j++ {
+				slotOffset = j
+
+				if (g.ctrls.Get(j) & ctrlEmpty) != ctrlEmpty {
+					slot := g.slots.At(j)
+					if !yield(slot.key, slot.value) {
+						canceled = 1
+						return false
+					}
+				}
+			}
+			slotOffset = 0
+		}
+		groupOffset = 0
+
+		return true
+	})
+
+	return bucketIndex*bucketSize*groupSize + groupOffset*groupSize + slotOffset + canceled
+}
+
 // GoString implements the fmt.GoStringer interface which is used when
 // formatting using the "%#v" format specifier.
 func (m *Map[K, V]) GoString() string {
