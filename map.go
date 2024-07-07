@@ -719,8 +719,8 @@ func (m *Map[K, V]) All(yield func(key K, value V) bool) {
 func (m *Map[K, V]) Scan(cursor uint32, yield func(key K, value V) bool) (nextCursor uint32) {
 	bucketSize := m.maxBucketCapacity / groupSize // the maximum number of groups a bucket can hold, default is 4096 / 8 = 512
 	bucketIndex := cursor / (bucketSize * groupSize)
-	groupOffset := (cursor / groupSize) % bucketSize
-	slotOffset := cursor % groupSize
+	groupIndex := (cursor / groupSize) % bucketSize
+	slotIndex := cursor % groupSize
 
 	bucketCount := m.bucketCount()
 	if bucketIndex >= bucketCount {
@@ -732,15 +732,15 @@ func (m *Map[K, V]) Scan(cursor uint32, yield func(key K, value V) bool) (nextCu
 	m.buckets(uintptr(bucketIndex), func(b *bucket[K, V]) bool {
 		if b.index < bucketIndex {
 			bucketIndex = 0
-			groupOffset = 0
-			slotOffset = 0
+			groupIndex = 0
+			slotIndex = 0
 			return false
 		}
 		bucketIndex = b.index
 
 		if b.used == 0 {
-			groupOffset = 0
-			slotOffset = 0
+			groupIndex = 0
+			slotIndex = 0
 			return true
 		}
 
@@ -749,11 +749,11 @@ func (m *Map[K, V]) Scan(cursor uint32, yield func(key K, value V) bool) (nextCu
 		groups := b.groups
 		groupMask := b.groupMask
 
-		for i := groupOffset; i <= groupMask; i++ {
-			groupOffset = i
+		for i := groupIndex; i <= groupMask; i++ {
+			groupIndex = i
 			g := groups.At(uintptr(i))
-			for j := slotOffset; j < groupSize; j++ {
-				slotOffset = j
+			for j := slotIndex; j < groupSize; j++ {
+				slotIndex = j
 
 				if (g.ctrls.Get(j) & ctrlEmpty) != ctrlEmpty {
 					slot := g.slots.At(j)
@@ -763,14 +763,14 @@ func (m *Map[K, V]) Scan(cursor uint32, yield func(key K, value V) bool) (nextCu
 					}
 				}
 			}
-			slotOffset = 0
+			slotIndex = 0
 		}
-		groupOffset = 0
+		groupIndex = 0
 
 		return true
 	})
 
-	return bucketIndex*bucketSize*groupSize + groupOffset*groupSize + slotOffset + canceled
+	return bucketIndex*bucketSize*groupSize + groupIndex*groupSize + slotIndex + canceled
 }
 
 // GoString implements the fmt.GoStringer interface which is used when
