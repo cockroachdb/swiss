@@ -311,12 +311,9 @@ type Map[K comparable, V any] struct {
 	_                 noCopy
 }
 
+// normalizeCapacity rounds capacity to the next power of 2.
 func normalizeCapacity(capacity uint32) uint32 {
-	v := (uint32(1) << bits.Len32(uint32(capacity-1)))
-	if v != 0 {
-		return v
-	}
-	return uint32(1) << 31
+	return uint32(1) << min(bits.Len32(capacity-1), 31)
 }
 
 // New constructs a new Map with the specified initial capacity. If
@@ -1479,11 +1476,23 @@ type ctrlGroup uint64
 
 // Get returns the i-th control byte.
 func (g *ctrlGroup) Get(i uint32) ctrl {
+	if invariants && i >= groupSize {
+		panic("invalid index")
+	}
+	if bigEndian {
+		i = i ^ (groupSize - 1) // equivalent to (groupSize-1-i).
+	}
 	return *(*ctrl)(unsafe.Add(unsafe.Pointer(g), i))
 }
 
 // Set sets the i-th control byte.
 func (g *ctrlGroup) Set(i uint32, c ctrl) {
+	if invariants && i >= groupSize {
+		panic("invalid index")
+	}
+	if bigEndian {
+		i = i ^ (groupSize - 1) // equivalent to (groupSize-1-i).
+	}
 	*(*ctrl)(unsafe.Add(unsafe.Pointer(g), i)) = c
 }
 

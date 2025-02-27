@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -61,15 +62,6 @@ func (m *Map[K, V]) randElement() (key K, value V, ok bool) {
 	return
 }
 
-func TestLittleEndian(t *testing.T) {
-	// The implementation of group h2 matching and group empty and deleted
-	// masking assumes a little endian CPU architecture. Assert that we are
-	// running on one.
-	b := []uint8{0x1, 0x2, 0x3, 0x4}
-	v := *(*uint32)(unsafe.Pointer(&b[0]))
-	require.EqualValues(t, 0x04030201, v)
-}
-
 func TestProbeSeq(t *testing.T) {
 	genSeq := func(n int, hash uintptr, mask uint32) []uint32 {
 		seq := makeProbeSeq(hash, mask)
@@ -107,6 +99,9 @@ func TestProbeSeq(t *testing.T) {
 
 func TestMatchH2(t *testing.T) {
 	ctrls := []ctrl{0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8}
+	if bigEndian {
+		slices.Reverse(ctrls)
+	}
 	for i := uintptr(1); i <= 8; i++ {
 		match := unsafeCtrlGroup(ctrls).matchH2(i)
 		bit := match.first()
@@ -125,6 +120,9 @@ func TestMatchEmpty(t *testing.T) {
 	}
 	for _, c := range testCases {
 		t.Run("", func(t *testing.T) {
+			if bigEndian {
+				slices.Reverse(c.ctrls)
+			}
 			match := unsafeCtrlGroup(c.ctrls).matchEmpty()
 			var results []uint32
 			for match != 0 {
@@ -147,6 +145,9 @@ func TestMatchEmptyOrDeleted(t *testing.T) {
 	}
 	for _, c := range testCases {
 		t.Run("", func(t *testing.T) {
+			if bigEndian {
+				slices.Reverse(c.ctrls)
+			}
 			match := unsafeCtrlGroup(c.ctrls).matchEmptyOrDeleted()
 			var results []uint32
 			for match != 0 {
