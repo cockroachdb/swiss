@@ -5,6 +5,7 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -14,8 +15,8 @@ jobs:
           - ubuntu-latest
           - macos-latest
         go:
-          - '1.21'
           - '1.22'
+          - '1.23'
 
     runs-on: ${{ matrix.os }}
 
@@ -38,7 +39,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: "1.22"
+          go-version: "1.23"
 
       - run: go test -v -race
 
@@ -51,6 +52,35 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: "1.22"
+          go-version: "1.23"
 
       - run: GOARCH=386 go test -v -tags swiss_invariants
+
+  linux-qemu-s390x:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Setup multiarch/qemu-user-static
+        run: |
+          docker run --rm --privileged multiarch/qemu-user-static:register --reset
+      - name: ubuntu-core:s390x-focal
+        shell: bash
+        run: |
+          docker run --rm --privileged \
+            -v "${{ github.workspace }}:/swiss" \
+            multiarch/ubuntu-core:s390x-focal \
+            bash -c "
+                uname -a &&
+                lscpu | grep Endian &&
+                apt-get update &&
+                apt-get install -y wget &&
+                wget -q https://go.dev/dl/go1.23.6.linux-s390x.tar.gz &&
+                tar xzf go1.23.6.linux-s390x.tar.gz -C /usr/local &&
+                export PATH="$PATH:/usr/local/go/bin" &&
+                cd /swiss &&
+                go version &&
+                go env &&
+                go test -v ./... &&
+                go test -v -tags swiss_invariants ./...
+            "

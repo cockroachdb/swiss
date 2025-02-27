@@ -1250,9 +1250,6 @@ map if the map is mutated during iteration.
 
 ## Caveats
 
-- The implementation currently requires a little endian CPU architecture. This
-  is not a fundamental limitation of the implementation, merely a choice of
-  expediency.
 - Go's builtin map has a fast-path for comparing strings that [share their
   underlying
   storage](https://github.com/golang/go/blob/4a7f3ac8eb4381ea62caa1741eeeec28363245b4/src/runtime/map_faststr.go#L100).
