@@ -182,18 +182,6 @@ func TestConvertNonFullToEmptyAndFullToDeleted(t *testing.T) {
 	}
 }
 
-func bitsetFromString(t *testing.T, str string) bitset {
-	require.Equal(t, 8, len(str))
-	var b bitset
-	for i := 0; i < 8; i++ {
-		require.True(t, str[i] == '0' || str[i] == '1')
-		if str[i] == '1' {
-			b |= 0x80 << (i * 8)
-		}
-	}
-	return b
-}
-
 func TestInitialCapacity(t *testing.T) {
 	testCases := []struct {
 		initialCapacity   int
