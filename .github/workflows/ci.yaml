@@ -15,8 +15,10 @@ jobs:
           - ubuntu-latest
           - macos-latest
         go:
+          - '1.21'
           - '1.22'
           - '1.23'
+          - '1.24'
 
     runs-on: ${{ matrix.os }}
 
@@ -30,8 +32,7 @@ jobs:
 
     - run: go test -v -tags swiss_invariants
 
-  linux-race:
-    name: go-linux-race
+  linux-noswissmap:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
@@ -39,12 +40,24 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: "1.23"
+          go-version: "1.24"
+
+      - run: GOEXPERIMENT=noswissmap go test -v
+
+  linux-race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.24"
 
       - run: go test -v -race
 
+
   linux-32bit:
-    name: go-linux-32bit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
@@ -52,7 +65,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: "1.23"
+          go-version: "1.24"
 
       - run: GOARCH=386 go test -v -tags swiss_invariants
 
@@ -75,8 +88,8 @@ jobs:
                 lscpu | grep Endian &&
                 apt-get update &&
                 apt-get install -y wget &&
-                wget -q https://go.dev/dl/go1.23.6.linux-s390x.tar.gz &&
-                tar xzf go1.23.6.linux-s390x.tar.gz -C /usr/local &&
+                wget -q https://go.dev/dl/go1.24.0.linux-s390x.tar.gz &&
+                tar xzf go1.24.0.linux-s390x.tar.gz -C /usr/local &&
                 export PATH="$PATH:/usr/local/go/bin" &&
                 cd /swiss &&
                 go version &&
