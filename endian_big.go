@@ -17,4 +17,18 @@
 
 package swiss
 
+import "unsafe"
+
 const bigEndian = true
+
+// Get returns the i-th control byte.
+func (g *ctrlGroup) Get(i uint32) ctrl {
+	i = i ^ (groupSize - 1) // equivalent to (groupSize-1-i).
+	return *(*ctrl)(unsafe.Add(unsafe.Pointer(g), i))
+}
+
+// Set sets the i-th control byte.
+func (g *ctrlGroup) Set(i uint32, c ctrl) {
+	i = i ^ (groupSize - 1) // equivalent to (groupSize-1-i).
+	*(*ctrl)(unsafe.Add(unsafe.Pointer(g), i)) = c
+}

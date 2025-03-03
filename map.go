@@ -1472,29 +1472,9 @@ type ctrl uint8
 
 // ctrlGroup is a fixed size array of groupSize control bytes stored in a
 // uint64.
+//
+// See Get() and Set() methods implemented in endian_*.go.
 type ctrlGroup uint64
-
-// Get returns the i-th control byte.
-func (g *ctrlGroup) Get(i uint32) ctrl {
-	if invariants && i >= groupSize {
-		panic("invalid index")
-	}
-	if bigEndian {
-		i = i ^ (groupSize - 1) // equivalent to (groupSize-1-i).
-	}
-	return *(*ctrl)(unsafe.Add(unsafe.Pointer(g), i))
-}
-
-// Set sets the i-th control byte.
-func (g *ctrlGroup) Set(i uint32, c ctrl) {
-	if invariants && i >= groupSize {
-		panic("invalid index")
-	}
-	if bigEndian {
-		i = i ^ (groupSize - 1) // equivalent to (groupSize-1-i).
-	}
-	*(*ctrl)(unsafe.Add(unsafe.Pointer(g), i)) = c
-}
 
 // SetEmpty sets all the control bytes to empty.
 func (g *ctrlGroup) SetEmpty() {
