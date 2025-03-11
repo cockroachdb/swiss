@@ -593,6 +593,12 @@ func (m *Map[K, V]) Delete(key K) {
 			if key == s.key {
 				b.used--
 				m.used--
+				if m.used == 0 {
+					// Reset the hash seed to make it more difficult for attackers to
+					// repeatedly trigger hash collisions. See issue
+					// https://github.com/golang/go/issues/25237.
+					m.seed = uintptr(fastrand64())
+				}
 				*s = slot[K, V]{}
 
 				// Only a full group can appear in the middle of a probe
