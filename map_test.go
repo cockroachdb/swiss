@@ -368,6 +368,20 @@ func TestIterateMutate(t *testing.T) {
 	require.EqualValues(t, e, vals)
 }
 
+func TestDeleteAll(t *testing.T) {
+	m := New[int, int](0)
+	originalSeed := m.seed
+	for i := 0; i < 100; i++ {
+		m.Put(i, i)
+	}
+	require.EqualValues(t, m.seed, originalSeed)
+
+	for i := 0; i < 100; i++ {
+		m.Delete(i)
+	}
+	require.NotEqualValues(t, m.seed, originalSeed)
+}
+
 func TestIterateDelete(t *testing.T) {
 	m := New[int, int](0)
 	for i := 0; i < 100; i++ {
