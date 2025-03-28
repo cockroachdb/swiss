@@ -512,3 +512,47 @@ func TestResizeVsSplit(t *testing.T) {
 		fmt.Printf("resize(%d): %6.3fms\n", count, time.Since(start).Seconds()*1000)
 	}
 }
+
+func TestMap_Scan(t *testing.T) {
+	n := 10000  // number of keys to insert and test against
+	passes := 5 // do multiple passes to test scan order stability
+	expected := make([]int, n)
+	m := New[int, int](0)
+	for i := 0; i < n; i++ {
+		expected[i] = i
+		m.Put(i, i+1)
+	}
+
+	allkeys := make([][]int, passes)
+	var cursor uint32
+	for pass := range allkeys {
+		// delete and reinsert all keys to test scan order stability
+		for i := 0; i < n; i++ {
+			m.Delete(i)
+			m.Put(i, i+1)
+		}
+		for {
+			keys := make([]int, 0, 100)
+			cursor = m.Scan(cursor, func(key int, value int) bool {
+				require.Equal(t, key+1, value)
+				keys = append(keys, key)
+				return len(keys) < cap(keys)
+			})
+			allkeys[pass] = append(allkeys[pass], keys...)
+			if cursor == 0 {
+				break
+			}
+		}
+	}
+
+	// ensure stable scan order
+	for i := 1; i < passes; i++ {
+		require.Equal(t, allkeys[0], allkeys[i])
+	}
+
+	sort.Slice(allkeys[0], func(i, j int) bool {
+		return allkeys[0][i] < allkeys[0][j]
+	})
+	// ensure scan returns all keys exactly once
+	require.Equal(t, expected, allkeys[0])
+}
